@@ -1,0 +1,8 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1+cu121
+einops==0.8.2
+numpy==2.4.6
+scipy==1.17.1
+soundfile==0.14.0
+pyarrow==23.0.1
+onnx==1.17.0

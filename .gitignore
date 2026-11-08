@@ -1,0 +1,14 @@
+.venv/
+data/
+__pycache__/
+*.pyc
+.workbuddy/
+MixerUI/bin/
+MixerUI/obj/
+RecordOut_Full/
+RecordOutMixer-Portable/
+native/bin/
+host/
+*.log
+*.zip
+third_party/

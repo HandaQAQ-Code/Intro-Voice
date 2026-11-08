@@ -1,0 +1,6 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1+cu121
+torchaudio==2.5.1+cu121
+vocos==0.1.0
+encodec==0.1.1
+PyYAML==6.0.3
