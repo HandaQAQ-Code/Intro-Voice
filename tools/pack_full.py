@@ -1,7 +1,13 @@
-"""Build the portable "完整版" folder: WinUI app + bundled Python + VST3 host + data.
+"""Build the portable "完整版" folder: WinUI app + 封装好的 Python 引擎 exe + data.
 
 Usage:  .venv\\Scripts\\python.exe tools\\pack_full.py
-The output folder is RecordOut_Full\\ and can be copied to any Windows x64 PC.
+
+前置：先运行 PyInstaller 产出 mixer_service.exe（见 tools/mixer_service.spec）：
+    .venv\\Scripts\\python.exe -m PyInstaller --noconfirm --clean tools/mixer_service.spec
+    然后把 dist/mixer_service.exe 复制到项目根目录。
+
+输出目录 RecordOut_Full\\，可复制到任意 Windows x64 PC。Python 引擎已封装为
+单个 exe（不含 .py 源码），data / native / mobile 等资源仍放 exe 同级目录。
 """
 from __future__ import annotations
 
@@ -14,14 +20,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DEST = ROOT / "RecordOut_Full"
 BUILD = ROOT / "MixerUI" / "bin" / "x64" / "Release" / "net8.0-windows10.0.19041.0" / "win-x64"
-VENV_SITE = ROOT / ".venv" / "Lib" / "site-packages"
-BASE_PY = Path(sys.base_prefix)
 
-SCRIPTS = ["mixer_service.py", "live_voice.py", "obs_audio.py", "super_resolution.py",
-           "gpu_super_resolution.py", "gpu_extractor.py", "gpu_live.py",
-           "vst3_scan_worker.py", "workshop_service.py", "market_service.py",
-           "mobile_mic.py", "virtual_device.py"]
-STDLIB_SKIP = {"site-packages", "test", "idlelib", "tkinter", "turtledemo", "lib2to3"}
+# 封装后的引擎：单个 exe，不含 .py 源码。由 PyInstaller 预先产出。
+ENGINE_EXE = ROOT / "mixer_service.exe"
+# 引擎运行所需的运行时数据（模型、APK、预设），仍放 exe 同级。
 DATA_FILES = [
     ("data/target.wav", "data/target.wav"),
     ("data/settings.json", "data/settings.json"),
@@ -34,8 +36,7 @@ DATA_FILES = [
     ("data/super_resolution/lavasr/config.yaml", "data/super_resolution/lavasr/config.yaml"),
     ("data/super_resolution/lavasr/pytorch_model.bin", "data/super_resolution/lavasr/pytorch_model.bin"),
 ]
-# Models that the libraries normally download to the user profile. They are
-# copied here so the portable build runs offline.
+# 这些模型库默认下载到用户 profile，这里复制一份让便携版离线可用。
 DPDFNET_DIR = Path(os.environ.get("LOCALAPPDATA", "")) / "dpdfnet" / "models"
 VOXLOCK_DIR = Path(os.environ.get("USERPROFILE", "")) / ".cache" / "huggingface" / "hub" / \
     "models--arbazsiddiqui--voxlock"
@@ -62,64 +63,29 @@ def copy_tree(source: Path, target: Path) -> int:
     return count
 
 
-def copy_stdlib(source: Path, target: Path) -> int:
-    target.mkdir(parents=True, exist_ok=True)
-    count = 0
-    for entry in source.iterdir():
-        if entry.name in STDLIB_SKIP or entry.name.startswith("."):
-            continue
-        if entry.is_dir():
-            count += copy_tree(entry, target / entry.name)
-        else:
-            shutil.copyfile(entry, target / entry.name)
-            count += 1
-    return count
-
-
 def main() -> int:
     if not BUILD.is_dir():
         raise SystemExit("请先构建 WinUI：dotnet build MixerUI\\MixerUI.csproj -c Release -p:Platform=x64")
-    if not BASE_PY.is_dir():
-        raise SystemExit(f"找不到 Python 运行时：{BASE_PY}")
+    if not ENGINE_EXE.is_file():
+        raise SystemExit(
+            "缺少 mixer_service.exe。请先运行：\n"
+            "  .venv\\Scripts\\python.exe -m PyInstaller --noconfirm --clean tools/mixer_service.spec\n"
+            "然后把 dist/mixer_service.exe 复制到项目根目录。")
 
     if DEST.exists():
         log(f"清理旧目录 {DEST.name}…")
         shutil.rmtree(DEST)
     DEST.mkdir(parents=True)
 
-    log("1/6 复制 WinUI 前端…")
+    log("1/5 复制 WinUI 前端…")
     copy_tree(BUILD, DEST / "RecordOutMixer")
 
-    log("2/6 复制 Python 标准库…")
-    runtime = DEST / "runtime"
-    runtime.mkdir()
-    for name in ("python.exe", "pythonw.exe", "python311.dll",
-                 "vcruntime140.dll", "vcruntime140_1.dll"):
-        source = BASE_PY / name
-        if source.is_file():
-            shutil.copyfile(source, runtime / name)
-    copy_stdlib(BASE_PY / "DLLs", runtime / "DLLs")
-    copy_stdlib(BASE_PY / "Lib", runtime / "Lib")
+    log("2/5 复制封装后的引擎 exe…")
+    shutil.copyfile(ENGINE_EXE, DEST / "mixer_service.exe")
 
-    log("3/6 复制第三方依赖（numpy / onnxruntime / 声纹 / 超分…）…")
-    site = runtime / "Lib" / "site-packages"
-    site.mkdir()
-    count = 0
-    for entry in VENV_SITE.iterdir():
-        if entry.name.startswith("~") or entry.name == "__pycache__":
-            continue
-        if entry.is_dir():
-            count += copy_tree(entry, site / entry.name)
-        else:
-            shutil.copyfile(entry, site / entry.name)
-            count += 1
-    log(f"    已复制 {count} 个文件")
-
-    log("4/6 复制宿主 DLL、脚本与模型…")
+    log("3/5 复制原生宿主 DLL、模型与手机端安装包…")
     (DEST / "native" / "bin").mkdir(parents=True)
     shutil.copyfile(ROOT / "native" / "bin" / "vst3host.dll", DEST / "native" / "bin" / "vst3host.dll")
-    for name in SCRIPTS:
-        shutil.copyfile(ROOT / name, DEST / name)
     for relative, destination in DATA_FILES:
         source = ROOT / relative
         if not source.is_file():
@@ -129,7 +95,6 @@ def main() -> int:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
     (DEST / "data" / "mixer" / "presets").mkdir(parents=True, exist_ok=True)
-    # 插件市场离线兜底目录与手机端安装包
     if (ROOT / "plugin-market").is_dir():
         copy_tree(ROOT / "plugin-market", DEST / "plugin-market")
     apk = ROOT / "mobile" / "IntroVoiceMic.apk"
@@ -148,22 +113,7 @@ def main() -> int:
     else:
         log("    警告：未找到 voxlock 模型缓存，首次使用 AI 时会联网下载")
 
-    log("5/6 安装 pip 到内置 Python（供 GPU 支持安装使用）…")
-    subprocess.run([str(runtime / "python.exe"), "-m", "ensurepip", "--upgrade"],
-                   check=False, capture_output=True, cwd=str(DEST))
-    check = (
-        "import numpy, scipy, sounddevice, soxr, onnxruntime, voxlock, dpdfnet\n"
-        "from dpdfnet.models import resolve_model\n"
-        "assert resolve_model(model='dpdfnet2', auto_download=False).onnx_path.is_file()\n"
-    )
-    env = {**os.environ, "PYTHONUTF8": "1",
-           "DPDFNET_MODEL_DIR": str(DEST / "data" / "models" / "dpdfnet"),
-           "HF_HOME": str(DEST / "data" / "runtime" / "hf")}
-    subprocess.run([str(runtime / "python.exe"), "-c", check],
-                   check=True, cwd=str(DEST), env=env)
-    log("    内置解释器自检通过（依赖与离线模型均可解析）")
-
-    log("6/6 写入启动脚本与说明…")
+    log("4/5 写入启动脚本与说明…")
     write_launchers()
     total = sum(f.stat().st_size for f in DEST.rglob("*") if f.is_file())
     log(f"完成：{DEST}（{total / (1024 ** 3):.2f} GB）")
@@ -185,22 +135,9 @@ def write_launchers() -> None:
     tools.mkdir(exist_ok=True)
     (tools / "install_gpu_support.bat").write_text(
         "@echo off\r\n"
-        "cd /d \"%~dp0..\"\r\n"
-        "echo Installing CUDA PyTorch into the bundled Python (about 2.5 GB download)...\r\n"
-        "runtime\\python.exe -m pip install --no-warn-script-location "
-        "torch==2.5.1+cu121 torchaudio==2.5.1+cu121 "
-        "--index-url https://download.pytorch.org/whl/cu121\r\n"
-        "if errorlevel 1 goto fail\r\n"
-        "runtime\\python.exe -m pip install --no-warn-script-location "
-        "vocos==0.1.0 einops pyyaml encodec==0.1.1\r\n"
-        "if errorlevel 1 goto fail\r\n"
-        "echo GPU tier is ready. Restart the mixer and pick the GPU mode.\r\n"
-        "pause\r\n"
-        "exit /b 0\r\n"
-        ":fail\r\n"
-        "echo Install failed. Check the network and run this script again.\r\n"
-        "pause\r\n"
-        "exit /b 1\r\n",
+        "echo GPU 档需要单独的 CUDA 环境，且当前封包版引擎（mixer_service.exe）不内置 torch。\r\n"
+        "echo 如需 GPU 档，请使用源码版运行（未封包），或联系开发者获取 GPU 专属构建。\r\n"
+        "pause\r\n",
         encoding="utf-8")
     (DEST / "README.txt").write_text(README, encoding="utf-8")
 
@@ -211,10 +148,10 @@ README = """Record Out 直播调音台 · 完整版（免安装）
 
 程序结构
   RecordOutMixer\\       WinUI 3 前端（自带 .NET 8 与 Windows App SDK 运行时）
-  runtime\\              内置 Python 3.11，已包含 numpy / onnxruntime / 声纹 / 超分依赖
+  mixer_service.exe     音频引擎（已封装为单个 exe，不含 Python 源码）
   native\\bin\\          原生 VST3 宿主 vst3host.dll
   data\\                 声纹 target.wav、个人模型、FlashSR / LavaSR 超分模型、预设
-  *.py                  Python 音频引擎（mixer_service.py 等）
+  mobile\\IntroVoiceMic.apk   手机麦克风 Android 安装包
 
 使用步骤
   1. 物理麦克风选择你的麦克风；输出选择 CABLE Input（VB-Audio Virtual Cable）。
@@ -228,8 +165,7 @@ README = """Record Out 直播调音台 · 完整版（免安装）
      明显更干净，16 kHz 人声重建回 48 kHz；音质自然耐听，但高频细节略平滑。
      占用约 1~2 个 CPU 核心，不需要显卡。
    GPU（声纹 + 降噪 + LavaSR v2 超分）
-     音质最好：齿音、气声、高频纹理最接近真实，几乎听不出重建痕迹；显存约 1~2 GB。
-     首次使用需运行 tools\\install_gpu_support.bat 安装 CUDA 版 PyTorch（约 2.5 GB）。
+     本封包版默认不含 torch，GPU 档会提示不可用；如需 GPU 档请使用源码版。
 
 超分延迟档
   低延迟 fast   192 ms 前瞻：连麦更跟手，瞬态细节略少
@@ -245,6 +181,7 @@ README = """Record Out 直播调音台 · 完整版（免安装）
 说明
   VST3 宿主基于 Steinberg VST3 SDK（MIT 许可），随本程序一起分发。
   VB-Audio Virtual Cable 为第三方软件，需自行安装。
+  音频引擎已封装为单文件 exe，不暴露源码。
 """
 
 

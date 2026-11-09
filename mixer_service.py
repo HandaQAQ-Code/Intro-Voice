@@ -29,9 +29,9 @@ import market_service
 import workshop_service
 import mobile_mic
 import virtual_device
+from app_paths import ROOT, DATA
 
-ROOT = Path(__file__).resolve().parent
-MIXER_DATA = ROOT / "data" / "mixer"
+MIXER_DATA = DATA / "mixer"
 PRESET_DIR = MIXER_DATA / "presets"
 SETTINGS_FILE = MIXER_DATA / "settings.json"
 DLL_PATH = ROOT / "native" / "bin" / "vst3host.dll"
@@ -979,8 +979,20 @@ def worker_python() -> str:
     return str(fallback) if fallback.is_file() else "python.exe"
 
 
-def scan_plugins(dirs: list[str]) -> dict:
+def _scan_worker_command(dirs: list[str]) -> list[str]:
+    """构造插件扫描子进程的命令行。
+
+    正常解释器运行：``<python> vst3_scan_worker.py <dirs>``；
+    PyInstaller 单文件：``<mixer_service.exe> --scan-worker <dirs>``，
+    复用同一个 exe 并在入口分支里处理扫描逻辑。
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--scan-worker", *dirs]
     worker = ROOT / "vst3_scan_worker.py"
+    return [worker_python(), str(worker), *dirs]
+
+
+def scan_plugins(dirs: list[str]) -> dict:
     max_timeout = 120
     # Redirect child output to a file instead of a pipe: some plugin modules spawn
     # helper processes that inherit stdout and would otherwise keep a pipe open
@@ -989,7 +1001,7 @@ def scan_plugins(dirs: list[str]) -> dict:
     plugins, errors = [], []
     try:
         with open(output_path, "wb") as handle:
-            proc = subprocess.run([worker_python(), str(worker), *dirs],
+            proc = subprocess.run(_scan_worker_command(dirs),
                                   stdout=handle, stderr=subprocess.STDOUT, timeout=max_timeout,
                                   cwd=str(ROOT))
     except subprocess.TimeoutExpired:
@@ -1279,7 +1291,7 @@ class Service:
                     f"GPU 档不可用（{gpu_note}）。可切换到 CPU 档，或运行 "
                     "tools\\install_gpu_support.bat 安装 CUDA 版 PyTorch 后重试。")
         if source == "mobile":
-            if not self.mic_server.running:
+            if self.mic_server.httpd is None:
                 raise RuntimeError("手机麦克风服务未启动。请到「手机麦克风」页启动服务，或用物理麦克风。")
             cfg["inputDevice"] = -1
         elif cfg["inputDevice"] < 0:
@@ -1849,4 +1861,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # PyInstaller 单文件模式下，插件扫描子进程复用本 exe：--scan-worker 分支。
+    if "--scan-worker" in sys.argv:
+        import vst3_scan_worker
+        sys.exit(vst3_scan_worker.main())
     main()

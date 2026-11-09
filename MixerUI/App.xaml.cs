@@ -40,6 +40,7 @@ public partial class App : Application
         for (var i = 0; i < 7 && dir is not null; i++)
         {
             if (File.Exists(Path.Combine(dir.FullName, "mixer_service.py"))
+                || File.Exists(Path.Combine(dir.FullName, "mixer_service.exe"))
                 || File.Exists(Path.Combine(dir.FullName, "start_mixer.bat")))
             {
                 _touchedPath = dir.FullName;

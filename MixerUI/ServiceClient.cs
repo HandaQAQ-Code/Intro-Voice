@@ -45,7 +45,8 @@ public sealed class ServiceClient : IDisposable
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         for (var i = 0; i < 7 && dir is not null; i++)
         {
-            if (File.Exists(Path.Combine(dir.FullName, "mixer_service.py")))
+            if (File.Exists(Path.Combine(dir.FullName, "mixer_service.py"))
+                || File.Exists(Path.Combine(dir.FullName, "mixer_service.exe")))
                 return dir.FullName;
             dir = dir.Parent;
         }
@@ -73,6 +74,11 @@ public sealed class ServiceClient : IDisposable
         PythonPath = File.Exists(fallback) ? fallback : "python.exe";
     }
 
+    /// <summary>打包后的引擎 exe 路径（若存在），否则为空。</summary>
+    private static string? BundledExe => File.Exists(Path.Combine(Root, "mixer_service.exe"))
+        ? Path.Combine(Root, "mixer_service.exe")
+        : null;
+
     public bool Connected => _pipe?.IsConnected == true && _reader is not null && !_closed;
 
     public async Task<string> ConnectAsync()
@@ -82,16 +88,32 @@ public sealed class ServiceClient : IDisposable
 
         if (!SpawnedService)
         {
-            if (!File.Exists(Path.Combine(Root, "mixer_service.py")))
-                throw new ServiceException($"未找到 mixer_service.py（根目录：{Root}）");
-            var info = new ProcessStartInfo(PythonPath, "mixer_service.py")
+            var exe = BundledExe;
+            if (exe is not null)
             {
-                WorkingDirectory = Root,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            _serviceProcess = Process.Start(info)
-                ?? throw new ServiceException("无法启动调音台服务进程");
+                // 打包后的引擎：直接启动 exe，无需 Python 解释器。
+                var info = new ProcessStartInfo(exe)
+                {
+                    WorkingDirectory = Root,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                _serviceProcess = Process.Start(info)
+                    ?? throw new ServiceException("无法启动调音台服务进程");
+            }
+            else
+            {
+                if (!File.Exists(Path.Combine(Root, "mixer_service.py")))
+                    throw new ServiceException($"未找到 mixer_service.py（根目录：{Root}）");
+                var info = new ProcessStartInfo(PythonPath, "mixer_service.py")
+                {
+                    WorkingDirectory = Root,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                _serviceProcess = Process.Start(info)
+                    ?? throw new ServiceException("无法启动调音台服务进程");
+            }
         }
 
         var deadline = DateTime.UtcNow.AddSeconds(60);

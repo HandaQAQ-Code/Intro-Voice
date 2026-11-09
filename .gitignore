@@ -12,3 +12,7 @@ host/
 *.log
 *.zip
 third_party/
+# PyInstaller 打包产物（源码封装为 exe，不随仓库提交）
+mixer_service.exe
+build/
+dist/

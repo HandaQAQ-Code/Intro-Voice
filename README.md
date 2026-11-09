@@ -55,10 +55,11 @@ Windows 本地软调音台：AI 人声处理 + 内置效果器 + 原生 VST3 宿
 
 ```text
 MixerUI/            WinUI 3 前端（页面、样式、素材）
-mixer_service.py    音频服务与命名管道协议
+mixer_service.py    音频服务与命名管道协议（源码；发行包封装为 mixer_service.exe）
 mixer_dsp.py        内置 DSP 链（无 UI 依赖）
 mobile_mic.py       手机麦克风：环形缓冲 + 局域网 HTTP/WebSocket
 virtual_device.py   虚拟麦克风端点检测与官方安装引导（不分发驱动）
+app_paths.py        统一根目录解析（源码 / PyInstaller frozen 两种模式）
 workshop_service.py 创意工坊：脚本编译、试听、发布到市场
 market_service.py   插件市场与自动更新
 mobile-android/     手机端 Android 工程（Java + OkHttp WebSocket）
@@ -66,6 +67,8 @@ mobile/             构建好的安装包 IntroVoiceMic.apk
 native/vst3host/    原生 VST3 宿主（C++）
 tests/              DSP、工坊、手机麦克风与真实插件回归
 plugin-market/      随包插件目录（离线兜底，不含第三方二进制）
+tools/mixer_service.spec  PyInstaller 打包配置（源码 → 单文件 exe）
+tools/pack_full.py  便携发行包打包脚本（WinUI + exe + data + native）
 ```
 
 ## 构建
@@ -89,12 +92,27 @@ copy app\build\outputs\apk\release\app-release.apk ..\mobile\IntroVoiceMic.apk
 
 运行需要 Python 3.11 + `requirements.txt` 依赖（含生成二维码的 `segno`）；便携发行包自带解释器与模型，不在本仓库内。
 
+### 封装引擎（发布时，隐藏源码）
+
+```bat
+:: 把 Python 音频引擎封装成单个 exe（不含 .py 源码，代码与依赖全封进去）
+.venv\Scripts\python.exe -m pip install pyinstaller
+.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean tools\mixer_service.spec
+copy dist\mixer_service.exe .
+:: 产出便携发行包（WinUI + mixer_service.exe + data + native + mobile）
+.venv\Scripts\python.exe tools\pack_full.py
+```
+
+封装后的 `mixer_service.exe` 会把引擎代码与 numpy / onnxruntime / 声纹 / 超分等依赖全部
+封进单个可执行文件；`data/`、`native/`、`mobile/` 等运行时资源仍放在 exe 同级目录。
+GPU 档（`torch`）为延迟导入，默认不封包，封装版会在该档位提示不可用。
+
 ## 自测
 
 ```bat
 python tests\test_mixer_dsp.py --engine
 python tests\test_workshop.py          :: 工坊编译/隔离/市场安装
-python tests\test_mobile_mic.py        :: 环形缓冲、DSP、HTTP/WebSocket 端到端
+python tests\test_mobile_mic.py        :: 环形缓冲、DSP、HTTP/WebSocket、lan_ip 检测
 python tests\test_vst3_real.py         :: 需要本机已装 VST3 插件
 ```
 

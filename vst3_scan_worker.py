@@ -7,14 +7,15 @@ plugin class (or scan failure) is printed as one JSON line on stdout.
 import ctypes
 import json
 import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-DLL_PATH = ROOT / "native" / "bin" / "vst3host.dll"
+from app_paths import ROOT, NATIVE
+
+DLL_PATH = NATIVE / "bin" / "vst3host.dll"
 
 
 def main() -> int:
-    dirs = sys.argv[1:]
+    # 单文件 exe 复用入口时，命令行里会带 --scan-worker，需过滤掉。
+    dirs = [a for a in sys.argv[1:] if a != "--scan-worker"]
     if not dirs:
         print(json.dumps({"error": "缺少扫描目录"}))
         return 2

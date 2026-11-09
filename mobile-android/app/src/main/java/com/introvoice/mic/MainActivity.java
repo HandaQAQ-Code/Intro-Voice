@@ -770,7 +770,11 @@ public final class MainActivity extends Activity {
             pinInput.setText(pin.toUpperCase(Locale.US));
         }
         savePrefs();
-        toast("已从电脑端读取配对信息");
+        toast("已从电脑端读取配对信息，正在连接…");
+        // 扫码后直接连接，省去再点一次「连接电脑」。
+        if (host != null && !host.isEmpty() && pin != null && pin.length() >= 4) {
+            requestPermissionsAndConnect();
+        }
     }
 
     private void toast(String msg) {

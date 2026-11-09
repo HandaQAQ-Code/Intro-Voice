@@ -29,9 +29,8 @@ import soxr
 import voxlock
 from obs_audio import OBS_DEVICE, OBS_LABEL, OBS_URL
 
+from app_paths import ROOT, DATA
 
-ROOT = Path(__file__).resolve().parent
-DATA = ROOT / "data"
 PROFILE = DATA / "target.wav"
 SETTINGS = DATA / "settings.json"
 SR = 16000

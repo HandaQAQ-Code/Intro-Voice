@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import subprocess
 import webbrowser
-from pathlib import Path
 from typing import Any
 
 import sounddevice as sd
 
-ROOT = Path(__file__).resolve().parent
+from app_paths import ROOT
+
 VENDOR_URL = "https://vb-cable.com/"
 DOWNLOAD_URL = "https://vb-cable.com/"
 DRIVER_NOTE = ("VB-CABLE 由 VB-Audio / Vincent Burel 开发，版权归原作者所有。"
