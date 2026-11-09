@@ -222,6 +222,10 @@
                                     <ComboBox x:Name="AiModeCombo" Header="模式" HorizontalAlignment="Stretch"
                                               SelectionChanged="AiMode_Changed" />
                                     <TextBlock x:Name="AiModeHint" Style="{StaticResource HintText}" />
+                                    <Button x:Name="GpuDownloadButton" Content="下载 GPU 支持" Visibility="Collapsed"
+                                            HorizontalAlignment="Stretch" Click="GpuDownload_Click" />
+                                    <TextBlock x:Name="GpuDownloadHint" Style="{StaticResource HintText}"
+                                               Visibility="Collapsed" TextWrapping="Wrap" />
                                     <ToggleSwitch x:Name="DenoiseSwitch" Header="实时降噪" />
                                     <TextBlock Text="输入增益（dB）" Style="{StaticResource HintText}" />
                                     <Slider x:Name="GainSlider" Minimum="-24" Maximum="24" StepFrequency="0.5"

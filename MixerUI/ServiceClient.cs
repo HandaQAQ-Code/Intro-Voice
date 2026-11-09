@@ -46,7 +46,8 @@ public sealed class ServiceClient : IDisposable
         for (var i = 0; i < 7 && dir is not null; i++)
         {
             if (File.Exists(Path.Combine(dir.FullName, "mixer_service.py"))
-                || File.Exists(Path.Combine(dir.FullName, "mixer_service.exe")))
+                || File.Exists(Path.Combine(dir.FullName, "mixer_service.exe"))
+                || File.Exists(Path.Combine(dir.FullName, "mixer_service", "mixer_service.exe")))
                 return dir.FullName;
             dir = dir.Parent;
         }
@@ -74,10 +75,17 @@ public sealed class ServiceClient : IDisposable
         PythonPath = File.Exists(fallback) ? fallback : "python.exe";
     }
 
-    /// <summary>打包后的引擎 exe 路径（若存在），否则为空。</summary>
-    private static string? BundledExe => File.Exists(Path.Combine(Root, "mixer_service.exe"))
-        ? Path.Combine(Root, "mixer_service.exe")
-        : null;
+    /// <summary>打包后的引擎 exe 路径（onedir 或单文件），若存在则返回，否则为空。</summary>
+    private static string? BundledExe
+    {
+        get
+        {
+            var onedir = Path.Combine(Root, "mixer_service", "mixer_service.exe");
+            if (File.Exists(onedir)) return onedir;
+            var flat = Path.Combine(Root, "mixer_service.exe");
+            return File.Exists(flat) ? flat : null;
+        }
+    }
 
     public bool Connected => _pipe?.IsConnected == true && _reader is not null && !_closed;
 

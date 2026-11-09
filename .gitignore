@@ -16,3 +16,5 @@ third_party/
 mixer_service.exe
 build/
 dist/
+# GPU 档按需下载的 CUDA PyTorch（用户界面点「下载」后生成，不随仓库提交）
+gpu_packages/

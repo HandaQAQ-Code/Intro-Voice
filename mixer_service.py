@@ -29,6 +29,7 @@ import market_service
 import workshop_service
 import mobile_mic
 import virtual_device
+import gpu_install
 from app_paths import ROOT, DATA
 
 MIXER_DATA = DATA / "mixer"
@@ -36,6 +37,15 @@ PRESET_DIR = MIXER_DATA / "presets"
 SETTINGS_FILE = MIXER_DATA / "settings.json"
 DLL_PATH = ROOT / "native" / "bin" / "vst3host.dll"
 LOG = logging.getLogger("mixer_service")
+
+# GPU 档的 CUDA PyTorch 等依赖按需下载到 gpu_packages/，启动时加入 sys.path，
+# 这样「下载」后无需重装主程序，import torch 即可命中。不随主包分发以瘦身。
+GPU_PACKAGES_DIR = ROOT / "gpu_packages"
+if GPU_PACKAGES_DIR.is_dir():
+    for _sub in ("", "torch", "torchaudio", "torchvision"):
+        _p = str(GPU_PACKAGES_DIR / _sub) if _sub else str(GPU_PACKAGES_DIR)
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
 
 
 def find_mobile_apk() -> Path | None:
@@ -524,7 +534,7 @@ def gpu_capability() -> tuple[bool, str]:
     try:
         import torch
     except Exception:
-        return False, "当前环境未安装 CUDA 版 PyTorch"
+        return False, "未安装 CUDA 版 PyTorch（可在界面点「下载 GPU 支持」）"
     try:
         if not torch.cuda.is_available():
             return False, "未检测到可用的 NVIDIA CUDA 设备"
@@ -1247,11 +1257,13 @@ class Service:
         devices = self._devices()
         plugins = self._plugins()
         gpu_ok, gpu_note = gpu_capability()
+        gpu_status = gpu_install.read_status(ROOT)
         return {"version": 1, "protocol": PROTOCOL_VERSION, "presetVersion": PRESET_VERSION,
                 "devices": devices, "settings": self.settings,
                 "plugins": plugins, "running": self.engine.thread.is_alive() if self.engine and self.engine.thread else False,
                 "chainError": self.chain_error, "messages": self.messages[-4:],
                 "gpuAvailable": gpu_ok, "gpuName": gpu_note,
+                "gpuStatus": gpu_status,
                 "status": self._status()}
 
     def cmd_devices(self, request):
@@ -1265,6 +1277,16 @@ class Service:
 
     def cmd_virtual_open_download(self, request):
         return virtual_device.open_download()
+
+    def cmd_gpu_status(self, request):
+        status = gpu_install.read_status(ROOT)
+        gpu_ok, gpu_note = gpu_capability()
+        status["available"] = gpu_ok
+        status["note"] = gpu_note
+        return status
+
+    def cmd_gpu_install(self, request):
+        return gpu_install.start_install(ROOT)
 
     def cmd_status(self, request):
         return self._status()

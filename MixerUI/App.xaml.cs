@@ -41,6 +41,7 @@ public partial class App : Application
         {
             if (File.Exists(Path.Combine(dir.FullName, "mixer_service.py"))
                 || File.Exists(Path.Combine(dir.FullName, "mixer_service.exe"))
+                || File.Exists(Path.Combine(dir.FullName, "mixer_service", "mixer_service.exe"))
                 || File.Exists(Path.Combine(dir.FullName, "start_mixer.bat")))
             {
                 _touchedPath = dir.FullName;

@@ -67,8 +67,9 @@ mobile/             构建好的安装包 IntroVoiceMic.apk
 native/vst3host/    原生 VST3 宿主（C++）
 tests/              DSP、工坊、手机麦克风与真实插件回归
 plugin-market/      随包插件目录（离线兜底，不含第三方二进制）
-tools/mixer_service.spec  PyInstaller 打包配置（源码 → 单文件 exe）
-tools/pack_full.py  便携发行包打包脚本（WinUI + exe + data + native）
+tools/mixer_service.spec  PyInstaller 打包配置（源码 → onedir 目录）
+tools/pack_full.py  便携发行包打包脚本（WinUI + onedir 引擎 + data + native）
+gpu_install.py      GPU 档 CUDA PyTorch 按需下载（装到 gpu_packages/，主包瘦身）
 ```
 
 ## 构建
@@ -95,17 +96,20 @@ copy app\build\outputs\apk\release\app-release.apk ..\mobile\IntroVoiceMic.apk
 ### 封装引擎（发布时，隐藏源码）
 
 ```bat
-:: 把 Python 音频引擎封装成单个 exe（不含 .py 源码，代码与依赖全封进去）
+:: 把 Python 音频引擎封装成 onedir 目录（不暴露 .py 源码，启动快、可增量更新）
 .venv\Scripts\python.exe -m pip install pyinstaller
 .venv\Scripts\python.exe -m PyInstaller --noconfirm --clean tools\mixer_service.spec
-copy dist\mixer_service.exe .
-:: 产出便携发行包（WinUI + mixer_service.exe + data + native + mobile）
+:: 产物为 dist\mixer_service\（mixer_service.exe + _internal\）
+:: 产出便携发行包（WinUI + mixer_service\ + data + native + mobile）
 .venv\Scripts\python.exe tools\pack_full.py
 ```
 
-封装后的 `mixer_service.exe` 会把引擎代码与 numpy / onnxruntime / 声纹 / 超分等依赖全部
-封进单个可执行文件；`data/`、`native/`、`mobile/` 等运行时资源仍放在 exe 同级目录。
-GPU 档（`torch`）为延迟导入，默认不封包，封装版会在该档位提示不可用。
+封装后的 `mixer_service\` 目录把引擎代码与 numpy / onnxruntime / 声纹 / 超分等依赖
+封进 `_internal\`（无 .py 源码）；`data/`、`native/`、`mobile/` 等运行时资源放在引擎目录旁。
+
+GPU 档的 CUDA PyTorch（约 2.5 GB）**不随主包分发**以瘦身：用户在主控页 GPU 档不可用时
+点「下载 GPU 支持」，程序用系统 Python 3.11 把依赖装到 `mixer_service\gpu_packages\`，
+装完重启即可选 GPU 档。详见 `gpu_install.py`。
 
 ## 自测
 

@@ -63,6 +63,8 @@ public sealed partial class MainWindow : Window
     private bool _muted;
     private bool _gpuAvailable;
     private string _gpuNote = "";
+    private bool _gpuInstalled;
+    private bool _gpuInstalling;
     private string _messageCache = "";
     private bool _marketLoading;
     private JsonElement _updateInfo;
@@ -255,7 +257,14 @@ public sealed partial class MainWindow : Window
             if (chainError.Length > 0) ShowError(chainError);
             _gpuAvailable = Bool(hello, "gpuAvailable");
             _gpuNote = Str(hello, "gpuName");
+            if (hello.TryGetProperty("gpuStatus", out var gpuStatus)
+                && gpuStatus.ValueKind == JsonValueKind.Object)
+            {
+                _gpuInstalled = Bool(gpuStatus, "installed");
+                _gpuInstalling = Bool(gpuStatus, "running");
+            }
             UpdateTierTexts();
+            UpdateGpuDownloadUi();
             await RefreshPresets();
             App.Trace("connect: presets refreshed");
             _connected = true;
@@ -449,6 +458,94 @@ public sealed partial class MainWindow : Window
             "quality" => "完整上下文：352 ms 前瞻。超分最稳定、齿音最自然，但延迟明显，适合录制与后期。",
             _ => "平衡：224 ms 前瞻，音质与延迟折中，日常直播/录屏推荐。",
         };
+        UpdateGpuDownloadUi();
+    }
+
+    /// <summary>GPU 档的「下载支持」按钮：只在 GPU 不可用且未在安装时显示。</summary>
+    private void UpdateGpuDownloadUi()
+    {
+        if (GpuDownloadButton is null) return;
+        if (_gpuAvailable)
+        {
+            GpuDownloadButton.Visibility = Visibility.Collapsed;
+            GpuDownloadHint.Visibility = Visibility.Collapsed;
+            return;
+        }
+        if (_gpuInstalling)
+        {
+            GpuDownloadButton.Visibility = Visibility.Collapsed;
+            GpuDownloadHint.Visibility = Visibility.Visible;
+            GpuDownloadHint.Text = "正在下载并安装 CUDA 版 PyTorch（约 2.5 GB），完成后请重启程序…";
+            return;
+        }
+        GpuDownloadButton.Visibility = Visibility.Visible;
+        GpuDownloadHint.Visibility = Visibility.Visible;
+        GpuDownloadHint.Text = _gpuInstalled
+            ? "GPU 支持已下载但暂不可用（可能是没有 NVIDIA 显卡或驱动）。安装完成后重启即可。"
+            : "GPU 档需要额外下载 CUDA 版 PyTorch（约 2.5 GB）。点「下载 GPU 支持」按需安装，用于给主包瘦身。";
+    }
+
+    private async void GpuDownload_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_connected) return;
+        GpuDownloadButton.IsEnabled = false;
+        GpuDownloadHint.Text = "正在准备下载…";
+        try
+        {
+            var result = await _client.CallAsync("gpu_install", new JsonObject());
+            if (!Bool(result, "ok"))
+            {
+                string err = Str(result, "error");
+                if (err.Length > 0) GpuDownloadHint.Text = err;
+                else GpuDownloadHint.Text = "无法启动下载。";
+                GpuDownloadButton.IsEnabled = true;
+                return;
+            }
+            _gpuInstalling = true;
+            GpuDownloadHint.Text = "正在下载并安装 CUDA 版 PyTorch（约 2.5 GB），完成后请重启程序…";
+            _ = PollGpuInstallAsync();
+        }
+        catch (Exception ex)
+        {
+            GpuDownloadHint.Text = ex.Message;
+            GpuDownloadButton.IsEnabled = true;
+        }
+    }
+
+    private async Task PollGpuInstallAsync()
+    {
+        while (_connected && _gpuInstalling)
+        {
+            await Task.Delay(3000);
+            try
+            {
+                var status = await _client.CallAsync("gpu_status", new JsonObject(), 8000);
+                bool running = Bool(status, "running");
+                string msg = Str(status, "message");
+                bool installed = Bool(status, "installed");
+                _gpuInstalled = installed;
+                _gpuInstalling = running;
+                if (running)
+                {
+                    GpuDownloadHint.Text = msg;
+                }
+                else
+                {
+                    GpuDownloadHint.Text = msg;
+                    GpuDownloadButton.IsEnabled = true;
+                    UpdateGpuDownloadUi();
+                    break;
+                }
+            }
+            catch
+            {
+                // 轮询失败就停，避免刷屏。
+                _gpuInstalling = false;
+                GpuDownloadButton.IsEnabled = true;
+                UpdateGpuDownloadUi();
+                break;
+            }
+        }
     }
 
     private void UpdateOptionLabels()
