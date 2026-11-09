@@ -19,7 +19,8 @@ BASE_PY = Path(sys.base_prefix)
 
 SCRIPTS = ["mixer_service.py", "live_voice.py", "obs_audio.py", "super_resolution.py",
            "gpu_super_resolution.py", "gpu_extractor.py", "gpu_live.py",
-           "vst3_scan_worker.py"]
+           "vst3_scan_worker.py", "workshop_service.py", "market_service.py",
+           "mobile_mic.py"]
 STDLIB_SKIP = {"site-packages", "test", "idlelib", "tkinter", "turtledemo", "lib2to3"}
 DATA_FILES = [
     ("data/target.wav", "data/target.wav"),
@@ -128,6 +129,14 @@ def main() -> int:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
     (DEST / "data" / "mixer" / "presets").mkdir(parents=True, exist_ok=True)
+    # 插件市场离线兜底目录与手机端安装包
+    if (ROOT / "plugin-market").is_dir():
+        copy_tree(ROOT / "plugin-market", DEST / "plugin-market")
+    apk = ROOT / "mobile" / "IntroVoiceMic.apk"
+    if apk.is_file():
+        (DEST / "mobile").mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(apk, DEST / "mobile" / "IntroVoiceMic.apk")
+        log(f"    已内置手机端安装包（{apk.stat().st_size / 1024 / 1024:.1f} MB）")
     if (DPDFNET_DIR / "dpdfnet2.onnx").is_file():
         target = DEST / "data" / "models" / "dpdfnet"
         target.mkdir(parents=True, exist_ok=True)

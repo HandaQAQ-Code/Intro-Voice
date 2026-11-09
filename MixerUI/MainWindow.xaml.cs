@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text.Json;
 using WinRT.Interop;
 using System.Text.Json.Nodes;
@@ -10,9 +11,12 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Composition;
+using Windows.ApplicationModel.DataTransfer;
 using Windows.Graphics;
+using Windows.Storage.Streams;
 using Windows.UI;
 
 namespace MixerUI;
@@ -41,6 +45,8 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherQueueTimer _paramTimer;
     private readonly DispatcherQueueTimer _optionTimer;
     private readonly DispatcherQueueTimer _dspTimer;
+    private readonly DispatcherQueueTimer _micTimer;
+    private readonly DispatcherQueueTimer _micSettingTimer;
 
     private string _savedInputLabel = "";
     private string _savedOutputLabel = "";
@@ -63,6 +69,10 @@ public sealed partial class MainWindow : Window
     private bool _updateAvailable;
     private string _updateFile = "";
     private bool _installInProgress;
+    private bool _micRunning;
+    private bool _micPolling;
+    private bool _micSyncing;
+    private string _micQrKey = "";
 
     public MainWindow()
     {
@@ -74,6 +84,26 @@ public sealed partial class MainWindow : Window
         FloorSlider.Minimum = -80;
         FloorSlider.Maximum = -20;
         FloorSlider.Value = -55;
+        // 手机麦克风的负范围同样只能在代码里设：XAML 先赋值 Maximum 时会被拒绝。
+        _micSyncing = true;
+        MicGainSlider.Minimum = -24;
+        MicGainSlider.Maximum = 24;
+        MicGainSlider.StepFrequency = 1;
+        MicGainSlider.Value = 0;
+        MicHpfSlider.Minimum = 20;
+        MicHpfSlider.Maximum = 300;
+        MicHpfSlider.StepFrequency = 10;
+        MicHpfSlider.Value = 80;
+        MicGateSlider.Minimum = -80;
+        MicGateSlider.Maximum = -20;
+        MicGateSlider.StepFrequency = 1;
+        MicGateSlider.Value = -62;
+        MicJitterSlider.Minimum = 20;
+        MicJitterSlider.Maximum = 300;
+        MicJitterSlider.StepFrequency = 10;
+        MicJitterSlider.Value = 80;
+        _micSyncing = false;
+        UpdateMicValueLabels();
         SetupDspControls();
         Title = "Intro Voice 音拓";
         try
@@ -115,7 +145,7 @@ public sealed partial class MainWindow : Window
         PresetCombo.ItemsSource = _presets;
         MarketList.ItemsSource = _market;
         WorkshopList.ItemsSource = _workshop;
-        foreach (var (name, _) in WorkshopTemplates)
+        foreach (var (name, _, _, _) in WorkshopTemplates)
             WorkshopTemplateCombo.Items.Add(name);
         foreach (var license in new[] { "MIT", "GPL-3.0", "CC0-1.0", "专有" })
             WsLicenseCombo.Items.Add(license);
@@ -149,6 +179,18 @@ public sealed partial class MainWindow : Window
         _dspTimer.IsRepeating = false;
         _dspTimer.Tick += ApplyDspParams;
 
+        // 手机麦克风页：状态 900 ms 轮询；滑块合并成 220 ms 一次下发。
+        _micTimer = DispatcherQueue.CreateTimer();
+        _micTimer.Interval = TimeSpan.FromMilliseconds(900);
+        _micTimer.Tick += PollMic;
+        _micTimer.Start();
+
+        _micSettingTimer = DispatcherQueue.CreateTimer();
+        _micSettingTimer.Interval = TimeSpan.FromMilliseconds(220);
+        _micSettingTimer.IsRepeating = false;
+        _micSettingTimer.Tick += FlushMicSettings;
+
+        ApplyWorkshopMode();
         Nav.SizeChanged += (_, _) => UpdatePageHeights();
         Closed += OnClosed;
         App.Trace("mainwindow: ctor end");
@@ -212,6 +254,8 @@ public sealed partial class MainWindow : Window
             await RefreshPresets();
             App.Trace("connect: presets refreshed");
             _connected = true;
+            if (PageMobileMic.Visibility == Visibility.Visible)
+                _ = RefreshMicStatusAsync(true);
             StatusDot.Fill = new SolidColorBrush(Color.FromArgb(255, 76, 201, 116));
             ServiceText.Text = notice;
             StartButton.IsEnabled = true;
@@ -725,7 +769,8 @@ public sealed partial class MainWindow : Window
         var pages = new (string Tag, Grid Page)[]
         {
             ("live", PageLive), ("fx", PageFx), ("workshop", PageWorkshop),
-            ("plugins", PagePlugins), ("market", PageMarket), ("help", PageHelp),
+            ("mobile", PageMobileMic), ("plugins", PagePlugins), ("market", PageMarket),
+            ("help", PageHelp),
         };
         foreach (var (pageTag, page) in pages)
         {
@@ -742,6 +787,8 @@ public sealed partial class MainWindow : Window
             _ = LoadMarketAsync(false);
         if (tag == "workshop" && _workshop.Count == 0)
             _ = LoadWorkshopAsync();
+        if (tag == "mobile")
+            _ = RefreshMicStatusAsync(true);
     }
 
     /// <summary>切页时把内容滚回顶部，避免沿用上一页的滚动位置。</summary>
@@ -791,9 +838,9 @@ public sealed partial class MainWindow : Window
     private bool _suppressWsParams;
     private DispatcherQueueTimer? _wsParamTimer;
 
-    private static readonly (string Name, string Code)[] WorkshopTemplates =
+    private static readonly (string Name, string Slug, string Desc, string Code)[] WorkshopTemplates =
     {
-        ("空白模板", """
+        ("空白模板", "blank", "最小可运行的骨架，自己写处理逻辑。", """
 PARAMS = [
     {"id": "gain", "name": "输出", "min": -24.0, "max": 12.0, "default": 0.0, "step": 0.5, "unit": "dB"},
 ]
@@ -802,7 +849,7 @@ def process(x, sr, params):
     # x 是 (块长度, 2) 的 float32；必须返回同形状数组
     return (x * db_to_gain(params["gain"])).astype(np.float32)
 """),
-        ("空气感", """
+        ("空气感", "air-detail", "提亮 6 kHz 以上，让人声更通透。", """
 PARAMS = [
     {"id": "amount", "name": "空气感", "min": 0.0, "max": 1.0, "default": 0.35, "step": 0.01},
     {"id": "trim", "name": "输出", "min": -12.0, "max": 6.0, "default": 0.0, "step": 0.5, "unit": "dB"},
@@ -814,7 +861,7 @@ def process(x, sr, params):
     y = x + high * (params["amount"] * 2.0)
     return (y * db_to_gain(params["trim"])).astype(np.float32)
 """),
-        ("温和饱和", """
+        ("温和饱和", "warm-saturation", "轻度过载与混合，增加密度和温度。", """
 PARAMS = [
     {"id": "drive", "name": "驱动", "min": 1.0, "max": 8.0, "default": 2.0, "step": 0.1},
     {"id": "mix", "name": "混合", "min": 0.0, "max": 1.0, "default": 0.6, "step": 0.01},
@@ -824,7 +871,7 @@ def process(x, sr, params):
     wet = soft_clip(x * params["drive"], 1.0) * 0.6
     return (x * (1.0 - params["mix"]) + wet * params["mix"]).astype(np.float32)
 """),
-        ("立体声加宽", """
+        ("立体声加宽", "stereo-wide", "拉开左右声场，直播与游戏语音更立体。", """
 PARAMS = [
     {"id": "width", "name": "宽度", "min": 0.0, "max": 2.0, "default": 1.3, "step": 0.05},
 ]
@@ -834,7 +881,7 @@ def process(x, sr, params):
     side = (x[:, 0] - x[:, 1]) * 0.5 * params["width"]
     return np.stack([mid + side, mid - side], axis=1).astype(np.float32)
 """),
-        ("低频收紧", """
+        ("低频收紧", "low-tight", "切掉桌面震动与喷麦低频，人声更干净。", """
 PARAMS = [
     {"id": "freq", "name": "截止", "min": 40.0, "max": 220.0, "default": 90.0, "step": 5.0, "unit": "Hz"},
 ]
@@ -1012,6 +1059,7 @@ def process(x, sr, params):
         ResetWorkshopEditor();
         WsAuthorBox.Text = Environment.UserName;
         ApplyWorkshopTemplate(0);
+        WsModeSwitch.IsOn = true;      // 新建意味着要写代码，直接进进阶模式
         WsNameBox.Focus(FocusState.Programmatic);
     }
 
@@ -1024,11 +1072,130 @@ def process(x, sr, params):
     private void ApplyWorkshopTemplate(int index)
     {
         if (index < 0 || index >= WorkshopTemplates.Length) return;
-        var (name, code) = WorkshopTemplates[index];
+        var (name, slug, desc, code) = WorkshopTemplates[index];
         WsCodeBox.Text = code;
-        if (index > 0 && WsNameBox.Text.Trim().Length == 0)
+        if (WsNameBox.Text.Trim().Length == 0)
             WsNameBox.Text = name;
+        if (WsSlugBox.Text.Trim().Length == 0)
+            WsSlugBox.Text = slug;
+        if (WsDescBox.Text.Trim().Length == 0)
+            WsDescBox.Text = desc;
         WsCodeStatus.Text = "模板 · 未保存";
+    }
+
+    // ------------------------------------------------------------------
+    // 创意工坊：新手模式 + 接口文档
+    // ------------------------------------------------------------------
+    private void WsMode_Toggled(object sender, RoutedEventArgs e) => ApplyWorkshopMode();
+
+    private void ApplyWorkshopMode()
+    {
+        bool advanced = WsModeSwitch.IsOn;
+        WsBeginnerCard.Visibility = advanced ? Visibility.Collapsed : Visibility.Visible;
+        WsMetaCard.Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
+        WsCodeCard.Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
+        WorkshopTemplateCombo.Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
+        WsCodeRow.Height = advanced ? new GridLength(1, GridUnitType.Star) : GridLength.Auto;
+        WsModeHint.Text = advanced
+            ? "进阶模式：完整元数据与代码编辑，适合改算法、调整参数结构。"
+            : "新手模式只显示模板和参数；需要改代码时切到进阶。";
+    }
+
+    private void WsTemplateCard_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || button.Tag is not string tag
+            || !int.TryParse(tag, out int index)) return;
+        ApplyWorkshopTemplate(index);
+        WsBeginnerHint.Text = $"已载入「{WorkshopTemplates[index].Name}」：点右上角「保存并启用」，"
+                              + "然后在下方拖动滑块微调；想换回来重新点卡片即可。";
+    }
+
+    private async void WorkshopDocs_Click(object sender, RoutedEventArgs e)
+    {
+        var panel = new StackPanel { Spacing = 8, MaxWidth = 640 };
+
+        panel.Children.Add(DocHeading("三句话说明白"));
+        panel.Children.Add(DocText("创意工坊插件就是一个 Python 文件：写一个 process(x, sr, params) 函数，"
+                                   + "决定声音怎么变。保存后立刻进入效果链，不用重启；写错了也只会旁通这一块，"
+                                   + "不会把声音弄坏。想改音色又不想写代码，用新手模式的模板就够。"));
+        panel.Children.Add(DocHeading("process 的四个约定"));
+        panel.Children.Add(DocText("· x：numpy float32，形状是 (块长度, 2)，左右声道各一列，数值大约在 -1 ~ 1。"));
+        panel.Children.Add(DocText("· sr：采样率，固定 48000，可以忽略。"));
+        panel.Children.Add(DocText("· params：字典，键是下面 PARAMS 里的 id，值是滑块当前位置。"));
+        panel.Children.Add(DocText("· 返回值：必须是和 x 形状、类型都一样的数组，否则会被判为出错并旁通。"));
+        panel.Children.Add(DocHeading("PARAMS：滑块从哪来"));
+        panel.Children.Add(DocCode(
+            "PARAMS = [\n"
+            + "    {\"id\": \"amount\", \"name\": \"空气感\", \"min\": 0.0, \"max\": 1.0,\n"
+            + "     \"default\": 0.35, \"step\": 0.01, \"unit\": \"\"},\n"
+            + "]"));
+        panel.Children.Add(DocText("id 用于 params[\"id\"] 取值；name 显示在界面上；unit 可写 dB、Hz，也可以留空。"
+                                   + "缺少 default 时会取 min。"));
+        panel.Children.Add(DocHeading("可以直接用的工具"));
+        panel.Children.Add(DocText("np：numpy；db_to_gain(6) 把 dB 换成线性倍数；soft_clip(x, 1.0) 做软限幅。"
+                                   + "除此之外不能 import，也不能读写文件或联网。"));
+        panel.Children.Add(DocHeading("最小示例"));
+        panel.Children.Add(DocCode(
+            "PARAMS = [\n"
+            + "    {\"id\": \"gain\", \"name\": \"输出\", \"min\": -24.0, \"max\": 12.0,\n"
+            + "     \"default\": 0.0, \"step\": 0.5, \"unit\": \"dB\"},\n"
+            + "]\n\n"
+            + "def process(x, sr, params):\n"
+            + "    return (x * db_to_gain(params[\"gain\"])).astype(np.float32)"));
+        panel.Children.Add(DocHeading("性能与排查"));
+        panel.Children.Add(DocText("每块音频是 40 ms（1920 样本），建议单块处理控制在 8 ms 内；尽量用 numpy 整体运算，"
+                                   + "少写逐样本循环。页面下方「测试」会用一秒合成信号跑一遍，给出峰值、电平与耗时。"));
+        panel.Children.Add(DocHeading("发布给其他人用"));
+        panel.Children.Add(DocText("填好名称、作者、版本与许可，点「发布到市场」。插件会推到公开仓库，"
+                                   + "别人在插件市场刷新即可一键安装；不发布也可以只在本机使用。"));
+
+        var dialog = new ContentDialog
+        {
+            Title = "创意工坊 · 接口文档",
+            Content = new ScrollViewer
+            {
+                Content = panel,
+                MaxHeight = 520,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            },
+            CloseButtonText = "知道了",
+            XamlRoot = RootLayout.XamlRoot,
+        };
+        await dialog.ShowAsync();
+    }
+
+    private TextBlock DocHeading(string text)
+    {
+        var block = new TextBlock { Text = text, Margin = new Thickness(0, 10, 0, 0) };
+        block.Style = (Style)Application.Current.Resources["SectionTitle"];
+        return block;
+    }
+
+    private TextBlock DocText(string text)
+    {
+        var block = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
+        block.Style = (Style)Application.Current.Resources["HintText"];
+        return block;
+    }
+
+    private Border DocCode(string code)
+    {
+        return new Border
+        {
+            Background = (Brush)Application.Current.Resources["ControlFillColorDefaultBrush"],
+            BorderBrush = (Brush)Application.Current.Resources["CardStrokeColorDefaultBrush"],
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(12, 10, 12, 10),
+            Child = new TextBlock
+            {
+                Text = code,
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                IsTextSelectionEnabled = true,
+            },
+        };
     }
 
     private JsonObject BuildWorkshopManifest() => new()
@@ -1249,6 +1416,276 @@ def process(x, sr, params):
         finally
         {
             SetBusy(false);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 手机麦克风
+    // ------------------------------------------------------------------
+    private async void PollMic(object? sender, object args)
+    {
+        if (!_connected || _busy || _micPolling) return;
+        if (PageMobileMic.Visibility != Visibility.Visible) return;
+        await RefreshMicStatusAsync(false);
+    }
+
+    private async Task RefreshMicStatusAsync(bool includeQr)
+    {
+        if (!_connected || _micPolling) return;
+        _micPolling = true;
+        try
+        {
+            var status = await _client.CallAsync("mic_status",
+                new JsonObject { ["qr"] = includeQr }, 8000);
+            ApplyMicStatus(status, includeQr);
+        }
+        catch
+        {
+            // 服务刚重启时可能瞬间拿不到状态，下一轮再试。
+        }
+        finally
+        {
+            _micPolling = false;
+        }
+    }
+
+    private async void ApplyMicStatus(JsonElement status, bool includeQr)
+    {
+        bool running = Bool(status, "running");
+        _micRunning = running;
+        string pin = Str(status, "pin");
+        string ip = Str(status, "ip");
+        int port = (int)Num(status, "port", 0);
+
+        MicStateText.Text = running ? "服务已启动" : "未启动";
+        MicStateDot.Background = new SolidColorBrush(running
+            ? Color.FromArgb(255, 76, 201, 116)
+            : Color.FromArgb(255, 138, 128, 120));
+        MicToggleButton.Content = running ? "停止服务" : "启动服务";
+        MicEndpointText.Text = running && ip.Length > 0 ? $"{ip}:{port}" : "服务未启动";
+        MicPinText.Text = running && pin.Length > 0 ? pin : "——";
+
+        string error = Str(status, "error");
+        bool apkReady = Bool(status, "apkReady");
+        if (!running)
+        {
+            MicQrHint.Text = error.Length > 0
+                ? $"启动失败：{error}"
+                : "点「启动服务」后，这里会出现二维码与 PIN。";
+        }
+        else if (!apkReady)
+        {
+            MicQrHint.Text = "服务已启动，但没有找到安装包；先构建 mobile-android，或直接安装已分发的 App。";
+        }
+        else
+        {
+            MicQrHint.Text = "手机与电脑连同一个 Wi-Fi，用系统相机或微信扫码；已装 App 会自动带出地址与 PIN。";
+        }
+
+        if (status.TryGetProperty("mic", out var mic) && mic.ValueKind == JsonValueKind.Object)
+        {
+            double clients = Num(mic, "clients", 0);
+            int rate = (int)Num(mic, "clientRate", 0);
+            double level = Num(mic, "levelDb", -90);
+            double buffer = Num(mic, "bufferMs", 0);
+            double packets = Num(mic, "packets", 0);
+            double underruns = Num(mic, "underruns", 0);
+            double overflows = Num(mic, "overflows", 0);
+
+            MicClientsText.Text = $"{clients:0}";
+            MicRateText.Text = rate > 0 && clients > 0 ? $"{rate / 1000.0:0.#} kHz" : "—";
+            MicLevelText.Text = level <= -89.5 ? "—" : $"{level:0} dB";
+            MicBufferText.Text = running && clients > 0 ? $"{buffer:0} ms" : "—";
+            MicPacketsText.Text = $"{packets:0}";
+            MicDropText.Text = $"{underruns:0}/{overflows:0}";
+            MicLevelBar.Value = Math.Clamp((level + 60.0) / 60.0 * 100.0, 0, 100);
+
+            string client = Str(mic, "client");
+            MicDeviceText.Text = client.Length > 0
+                ? $"正在接收：{client} · 手机端 {rate} Hz"
+                : running ? "服务已就绪，等待手机连接…" : "服务未启动。";
+        }
+
+        if (status.TryGetProperty("inputSource", out var src)
+            && src.ValueKind == JsonValueKind.String)
+        {
+            _micSyncing = true;
+            bool mobile = src.GetString() == "mobile";
+            MicSourceMobile.IsChecked = mobile;
+            MicSourceDevice.IsChecked = !mobile;
+            _micSyncing = false;
+        }
+
+        // 只在进入页面 / 启动服务时同步滑块，避免和拖动打架。
+        if (includeQr && status.TryGetProperty("settings", out var cfg)
+            && cfg.ValueKind == JsonValueKind.Object)
+        {
+            _micSyncing = true;
+            MicGainSlider.Value = Math.Clamp(Num(cfg, "gainDb", 0), -24, 24);
+            MicHpfSlider.Value = Math.Clamp(Num(cfg, "hpfHz", 80), 20, 300);
+            MicGateSlider.Value = Math.Clamp(Num(cfg, "gateDb", -62), -80, -20);
+            MicJitterSlider.Value = Math.Clamp(Num(cfg, "jitterMs", 80), 20, 300);
+            _micSyncing = false;
+            UpdateMicValueLabels();
+        }
+
+        string key = $"{pin}:{port}";
+        if (includeQr && running && key != _micQrKey)
+        {
+            _micQrKey = key;
+            var connect = await Base64ImageAsync(Str(status, "qrConnect"));
+            var install = await Base64ImageAsync(Str(status, "qrInstall"));
+            MicConnectQr.Source = connect;
+            MicInstallQr.Source = install;
+            MicConnectQrBox.Background = new SolidColorBrush(
+                connect is null ? Microsoft.UI.Colors.Transparent : Microsoft.UI.Colors.White);
+            MicInstallQrBox.Background = new SolidColorBrush(
+                install is null ? Microsoft.UI.Colors.Transparent : Microsoft.UI.Colors.White);
+            MicQrRow.Visibility = connect is null && install is null
+                ? Visibility.Collapsed : Visibility.Visible;
+            if (connect is null && install is null)
+                MicQrHint.Text = "二维码生成失败：确认 data 目录可写，且运行环境已安装 segno。";
+        }
+        else if (!running)
+        {
+            _micQrKey = "";
+            MicConnectQr.Source = null;
+            MicInstallQr.Source = null;
+            MicQrRow.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void MicToggle_Click(object sender, RoutedEventArgs e)
+    {
+        _ = ToggleMicAsync();
+    }
+
+    private async Task ToggleMicAsync()
+    {
+        if (_busy || !_connected) return;
+        SetBusy(true, _micRunning ? "正在停止手机麦克风…" : "正在启动手机麦克风…");
+        try
+        {
+            if (_micRunning)
+                await _client.CallAsync("mic_stop", null, 15000);
+            else
+                await _client.CallAsync("mic_start", new JsonObject(), 20000);
+            await RefreshMicStatusAsync(true);
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
+    private void MicCopy_Click(object sender, RoutedEventArgs e)
+    {
+        string endpoint = MicEndpointText.Text;
+        string pin = MicPinText.Text;
+        if (!_micRunning || endpoint.Length == 0) return;
+        var package = new DataPackage();
+        package.SetText($"{endpoint}  PIN {pin}");
+        Clipboard.SetContent(package);
+        MicQrHint.Text = "连接信息已复制，可以发给手机或粘贴到 App 里。";
+    }
+
+    private async void MicInstallPage_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await _client.CallAsync("mic_open_apk", new JsonObject { ["mode"] = "page" }, 10000);
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+        }
+    }
+
+    private async void MicApk_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await _client.CallAsync("mic_open_apk", new JsonObject(), 10000);
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+        }
+    }
+
+    private void MicSlider_Changed(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (_micSyncing) return;
+        UpdateMicValueLabels();
+        _micSettingTimer.Stop();
+        _micSettingTimer.Start();
+    }
+
+    private void UpdateMicValueLabels()
+    {
+        MicGainValue.Text = $"{MicGainSlider.Value:0} dB";
+        MicHpfValue.Text = $"{MicHpfSlider.Value:0} Hz";
+        MicGateValue.Text = $"{MicGateSlider.Value:0} dB";
+        MicJitterValue.Text = $"{MicJitterSlider.Value:0} ms";
+    }
+
+    private async void FlushMicSettings(object? sender, object args)
+    {
+        if (!_connected || _micSyncing) return;
+        try
+        {
+            await _client.CallAsync("mic_settings", new JsonObject
+            {
+                ["gainDb"] = Math.Round(MicGainSlider.Value, 0),
+                ["hpfHz"] = Math.Round(MicHpfSlider.Value, 0),
+                ["gateDb"] = Math.Round(MicGateSlider.Value, 0),
+                ["jitterMs"] = Math.Round(MicJitterSlider.Value, 0),
+            }, 8000);
+        }
+        catch
+        {
+            // 服务忙时下一轮拖动会再发一次。
+        }
+    }
+
+    private async void MicSource_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_micSyncing || !_connected) return;
+        string source = MicSourceMobile.IsChecked == true ? "mobile" : "device";
+        try
+        {
+            await _client.CallAsync("set_options",
+                new JsonObject { ["inputSource"] = source }, 8000);
+            MicDeviceText.Text = source == "mobile"
+                ? "输入源已切到手机麦克风；回「主控」页重新开始即可生效。"
+                : "输入源已切回电脑声卡；回「主控」页重新开始即可生效。";
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+        }
+    }
+
+    private static async Task<ImageSource?> Base64ImageAsync(string base64)
+    {
+        if (string.IsNullOrWhiteSpace(base64)) return null;
+        try
+        {
+            byte[] bytes = Convert.FromBase64String(base64);
+            using var stream = new InMemoryRandomAccessStream();
+            await stream.WriteAsync(bytes.AsBuffer());
+            stream.Seek(0);
+            var bitmap = new BitmapImage();
+            await bitmap.SetSourceAsync(stream);
+            return bitmap;
+        }
+        catch
+        {
+            return null;
         }
     }
 

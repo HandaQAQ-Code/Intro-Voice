@@ -27,6 +27,7 @@ import soxr
 from mixer_dsp import DspChain, default_params as dsp_default_params, merge_params as dsp_merge_params
 import market_service
 import workshop_service
+import mobile_mic
 
 ROOT = Path(__file__).resolve().parent
 MIXER_DATA = ROOT / "data" / "mixer"
@@ -34,6 +35,23 @@ PRESET_DIR = MIXER_DATA / "presets"
 SETTINGS_FILE = MIXER_DATA / "settings.json"
 DLL_PATH = ROOT / "native" / "bin" / "vst3host.dll"
 LOG = logging.getLogger("mixer_service")
+
+
+def find_mobile_apk() -> Path | None:
+    for candidate in (ROOT / "tools" / "手机麦克风" / "IntroVoiceMic.apk",
+                      ROOT / "mobile" / "IntroVoiceMic.apk",
+                      ROOT / "mobile-android" / "IntroVoiceMic.apk"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def find_app_icon() -> Path | None:
+    for candidate in (ROOT / "RecordOutMixer" / "Assets" / "app-icon.png",
+                      ROOT / "MixerUI" / "Assets" / "app-icon.png"):
+        if candidate.is_file():
+            return candidate
+    return None
 
 # The portable build ships the noise-suppression and speaker-embedding models
 # inside data/. Point both libraries at those copies so a fresh machine works
@@ -527,10 +545,66 @@ class EngineOptions:
         self.latency_mode = "balanced"
 
 
+class _VirtualInput:
+    """把手机麦克风的环形缓冲伪装成输入流，按块节奏喂给处理线程。"""
+
+    def __init__(self, engine: "MixerEngine", pending: queue.Queue,
+                 frames: int, rate: int):
+        self.engine = engine
+        self.pending = pending
+        self.frames = max(1, int(frames))
+        self.period = self.frames / float(rate)
+        self.active = True
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def __enter__(self) -> "_VirtualInput":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self.active = False
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+    def _run(self) -> None:
+        nxt = time.monotonic()
+        while not self._stop.is_set() and not self.engine.stop_event.is_set():
+            mobile = self.engine.mobile
+            if mobile is None:
+                audio = np.zeros(self.frames, dtype=np.float32)
+            else:
+                audio = mobile.read(self.frames)
+            try:
+                self.pending.put_nowait((time.monotonic(), audio[:, None]))
+            except queue.Full:
+                try:
+                    self.pending.get_nowait()
+                except queue.Empty:
+                    pass
+                self.engine.drops += 1
+                try:
+                    self.pending.put_nowait((time.monotonic(), audio[:, None]))
+                except queue.Full:
+                    pass
+            nxt += self.period
+            delay = nxt - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            else:
+                nxt = time.monotonic()
+
+
 class MixerEngine:
-    def __init__(self, chain: Vst3Chain, events: queue.Queue):
+    def __init__(self, chain: Vst3Chain, events: queue.Queue, mobile=None):
         self.chain = chain
         self.events = events
+        self.mobile = mobile          # MobileMic：手机麦克风环形缓冲
+        self.input_source = "device"
         self.options = EngineOptions()
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
@@ -598,7 +672,11 @@ class MixerEngine:
         try:
             with windows_audio_context():
                 self._status("准备音频设备…")
-                self.input_rate, input_channels = device_format(input_device, "input")
+                self.input_source = str(cfg.get("inputSource") or "device")
+                if self.input_source == "mobile":
+                    self.input_rate, input_channels = CHAIN_RATE, 1
+                else:
+                    self.input_rate, input_channels = device_format(input_device, "input")
                 self.output_rate, output_channels = pick_output_format(output_device)
                 chain_latency = 0
                 if self.chain.count() > 0:
@@ -666,15 +744,20 @@ class MixerEngine:
                     # muted or faulted engine cannot show a healthy meter.
                     self.output_db = 20 * np.log10(float(np.sqrt(np.mean(outdata ** 2))) + 1e-9)
 
+                input_ctx = (_VirtualInput(self, pending, chunk_size, self.input_rate)
+                             if self.input_source == "mobile" else
+                             open_audio_stream("input", device=input_device, samplerate=self.input_rate,
+                                               channels=input_channels, dtype="float32",
+                                               blocksize=chunk_size, callback=capture))
                 with open_audio_stream("output", device=output_device, samplerate=CHAIN_RATE,
                                        channels=output_channels, dtype="float32", blocksize=480,
                                        callback=playback) as output_stream:
-                    with open_audio_stream("input", device=input_device, samplerate=self.input_rate,
-                                           channels=input_channels, dtype="float32",
-                                           blocksize=chunk_size, callback=capture) as input_stream:
+                    with input_ctx as input_stream:
                         self.running = True
                         self.loading = False
-                        self._status(f"运行中：{device_label(input_device)} → {device_label(output_device)}")
+                        source_label = ("手机麦克风（Wi-Fi）" if self.input_source == "mobile"
+                                        else device_label(input_device))
+                        self._status(f"运行中：{source_label} → {device_label(output_device)}")
                         last_audio = time.monotonic()
                         stalls = 0
                         previous_drops = 0
@@ -952,20 +1035,30 @@ class Service:
         except Exception as exc:
             self.chain_error = str(exc)
             LOG.exception("原生宿主加载失败")
-        self.engine = MixerEngine(self.chain, self.events) if self.chain else None
+        self.mobile = mobile_mic.MobileMic(CHAIN_RATE)
+        self.mic_server = mobile_mic.MicServer(self.mobile, apk_path=find_mobile_apk(),
+                                               icon_path=find_app_icon())
+        self.engine = MixerEngine(self.chain, self.events, self.mobile) if self.chain else None
         self.monitor = SystemMonitor()
         self.should_stop = False
         self.settings = self._load_settings()
+        if self.mobile:
+            cfg = self.settings["mobileMic"]
+            self.mobile.configure(**{k: cfg[k] for k in ("gainDb", "hpfHz", "gateDb", "jitterMs")})
+            self.mic_server._requested = int(cfg.get("port") or mobile_mic.DEFAULT_PORT)
         self.scan_cache: list[dict] = []
         self.running = False
         self.progress: dict | None = None
 
     # -- helpers -----------------------------------------------------------
     def _load_settings(self) -> dict:
-        defaults = {"input": "", "output": "", "aiMode": "off", "denoise": False,
+        defaults = {"input": "", "output": "", "inputSource": "device",
+                    "aiMode": "off", "denoise": False,
                     "gainDb": 0.0, "floorDb": -55.0, "srStrength": 0.7, "latencyMode": "balanced",
                     "dsp": dsp_default_params(),
-                    "workshop": {"order": [], "enabled": {}, "params": {}}}
+                    "workshop": {"order": [], "enabled": {}, "params": {}},
+                    "mobileMic": {"gainDb": 0.0, "hpfHz": 80.0, "gateDb": -62.0,
+                                  "jitterMs": 80.0, "port": mobile_mic.DEFAULT_PORT}}
         try:
             saved = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
             if isinstance(saved, dict):
@@ -981,6 +1074,16 @@ class Service:
             "order": [x for x in (shop.get("order") or []) if isinstance(x, str)],
             "enabled": dict(shop.get("enabled") or {}),
             "params": dict(shop.get("params") or {}),
+        }
+        mic = defaults.get("mobileMic")
+        if not isinstance(mic, dict):
+            mic = {}
+        defaults["mobileMic"] = {
+            "gainDb": float(mic.get("gainDb", 0.0)),
+            "hpfHz": float(mic.get("hpfHz", 80.0)),
+            "gateDb": float(mic.get("gateDb", -62.0)),
+            "jitterMs": float(mic.get("jitterMs", 80.0)),
+            "port": int(mic.get("port", mobile_mic.DEFAULT_PORT)),
         }
         return defaults
 
@@ -1103,6 +1206,8 @@ class Service:
                 "workshop": {**(eng.workshop.metrics() if eng else {}),
                              "error": getattr(eng, "workshop_error", "") if eng else ""},
                 "progress": self.progress,
+                "inputSource": self.settings.get("inputSource", "device"),
+                "mobileMic": self.mic_server.status(),
                 "spectrum": getattr(eng, "spectrum", []) if eng else [],
                 "chainError": self.chain_error}
 
@@ -1141,7 +1246,9 @@ class Service:
         return self._status()
 
     def _start_config(self, request, settings: dict) -> dict:
-        cfg = {"inputDevice": int(request.get("inputDevice", -1)),
+        source = str(request.get("inputSource", settings.get("inputSource", "device")))
+        cfg = {"inputSource": source,
+               "inputDevice": int(request.get("inputDevice", -1)),
                "outputDevice": int(request.get("outputDevice", -1)),
                "aiMode": str(request.get("aiMode", settings.get("aiMode", "off"))),
                "denoise": bool(request.get("denoise", settings.get("denoise", False))),
@@ -1159,8 +1266,12 @@ class Service:
                 raise RuntimeError(
                     f"GPU 档不可用（{gpu_note}）。可切换到 CPU 档，或运行 "
                     "tools\\install_gpu_support.bat 安装 CUDA 版 PyTorch 后重试。")
-        if cfg["inputDevice"] < 0 or cfg["outputDevice"] < 0:
-            raise RuntimeError("尚未选择输入或输出设备")
+        if source == "mobile":
+            if not self.mic_server.running:
+                raise RuntimeError("手机麦克风服务未启动。请到「手机麦克风」页启动服务，或用物理麦克风。")
+            cfg["inputDevice"] = -1
+        elif cfg["inputDevice"] < 0:
+            raise RuntimeError("尚未选择输入设备")
         if cfg["aiMode"] != "off":
             from live_voice import PROFILE
             if not PROFILE.is_file():
@@ -1178,9 +1289,10 @@ class Service:
             raise RuntimeError("正在运行；请先停止再修改设备")
         cfg = self._start_config(request, self.settings)
         for key in ("inputDevice", "outputDevice", "aiMode", "denoise", "gainDb",
-                    "floorDb", "srStrength", "latencyMode"):
+                    "floorDb", "srStrength", "latencyMode", "inputSource"):
             self.settings[key] = cfg[key]
-        self.settings["input"] = device_label(cfg["inputDevice"])
+        self.settings["input"] = ("手机麦克风（Wi-Fi）" if cfg["inputSource"] == "mobile"
+                                  else device_label(cfg["inputDevice"]))
         self.settings["output"] = device_label(cfg["outputDevice"])
         self.settings["dsp"] = cfg["dsp"]
         self._save_settings()
@@ -1214,6 +1326,12 @@ class Service:
         if "latencyMode" in request:
             o.latency_mode = str(request["latencyMode"])
             self.settings["latencyMode"] = o.latency_mode
+        if "inputSource" in request:
+            source = str(request["inputSource"])
+            if source not in ("device", "mobile"):
+                raise RuntimeError("输入源无效")
+            self.settings["inputSource"] = source
+            self._save_settings()
         return {"ok": True}
 
     def cmd_dsp(self, request):
@@ -1426,6 +1544,61 @@ class Service:
         slug = str(request.get("slug") or "")
         result = workshop_service.publish(ROOT, slug, str(request.get("message") or ""))
         return result
+
+    # -- 手机麦克风 ---------------------------------------------------------
+    def cmd_mic_start(self, request):
+        if request.get("port"):
+            self.mic_server._requested = int(request["port"])
+        status = self.mic_server.start()
+        if status["running"]:
+            self.settings["mobileMic"]["port"] = status["port"]
+            self._save_settings()
+            status["qrInstall"] = self.mic_server.qr_png(status["installUrl"])
+            status["qrConnect"] = self.mic_server.qr_png(status["deepLink"])
+        return status
+
+    def cmd_mic_stop(self, request):
+        return self.mic_server.stop()
+
+    def cmd_mic_status(self, request):
+        status = self.mic_server.status()
+        status["settings"] = dict(self.settings["mobileMic"])
+        status["inputSource"] = self.settings.get("inputSource", "device")
+        if request.get("qr") and status["running"]:
+            status["qrConnect"] = self.mic_server.qr_png(status["deepLink"])
+            status["qrInstall"] = self.mic_server.qr_png(status["installUrl"])
+        return status
+
+    def cmd_mic_settings(self, request):
+        values = {}
+        for key, limit in (("gainDb", 24.0), ("hpfHz", 300.0),
+                           ("gateDb", -20.0), ("jitterMs", 300.0)):
+            if key in request:
+                values[key] = float(request[key])
+        self.mobile.configure(**values)
+        cfg = self.settings["mobileMic"]
+        for key, attr in (("gainDb", "gain_db"), ("hpfHz", "hpf_hz"),
+                          ("gateDb", "gate_db"), ("jitterMs", "jitter_ms")):
+            cfg[key] = getattr(self.mobile, attr)
+        self._save_settings()
+        return {"mic": self.mobile.metrics(), "settings": cfg}
+
+    def cmd_mic_open_apk(self, request):
+        apk = find_mobile_apk()
+        install_url = (self.mic_server.status()["installUrl"]
+                       if self.mic_server.httpd else "")
+        if str(request.get("mode") or "") == "page":
+            if not install_url:
+                raise RuntimeError("请先启动手机麦克风服务")
+            os.startfile(install_url)  # noqa: S606
+            return {"opened": install_url}
+        if apk is not None:
+            subprocess.Popen(["explorer", "/select,", str(apk)])
+            return {"opened": str(apk)}
+        if install_url:
+            os.startfile(install_url)  # noqa: S606
+            return {"opened": install_url}
+        raise RuntimeError("还没有 APK，且手机麦克风服务未启动")
 
     # -- 自动更新 -----------------------------------------------------------
     def cmd_update_check(self, request):

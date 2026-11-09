@@ -90,6 +90,11 @@
                         <FontIcon Glyph="&#xE70F;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <NavigationViewItem Content="手机麦克风" Tag="mobile">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Phone" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem Tag="plugins">
                     <NavigationViewItem.Content>
                         <StackPanel Orientation="Horizontal" Spacing="8">
@@ -781,7 +786,11 @@
                 </Grid.RowDefinitions>
 
                 <Border Style="{StaticResource CardStyle}" Padding="14,10">
-                    <Grid ColumnSpacing="12">
+                    <Grid ColumnSpacing="12" RowSpacing="6">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
@@ -796,10 +805,11 @@
                                 </Border>
                             </StackPanel>
                             <TextBlock Style="{StaticResource HintText}"
-                                       Text="写一个 process(x, sr, params)：x 是 (块长度, 2) 的 float32，返回同形状数组；保存后立即进入效果链。" />
+                                       Text="不会写代码也能做插件：挑一个模板，拖动两个滑块，保存就生效。" />
                         </StackPanel>
                         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                            <ComboBox x:Name="WorkshopTemplateCombo" Width="132" PlaceholderText="从模板开始"
+                            <Button Content="接口文档" Click="WorkshopDocs_Click" />
+                            <ComboBox x:Name="WorkshopTemplateCombo" Width="118" PlaceholderText="从模板开始"
                                       SelectionChanged="WorkshopTemplate_Changed" />
                             <Button Content="新建" Click="WorkshopNew_Click" />
                             <Button Content="保存并启用" Click="WorkshopSave_Click"
@@ -809,6 +819,12 @@
                                           IsOn="False" MinWidth="0" Toggled="WsEnable_Toggled" />
                             <Button x:Name="WorkshopPublishButton" Content="发布到市场" Click="WorkshopPublish_Click"
                                     IsEnabled="False" />
+                        </StackPanel>
+                        <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="12">
+                            <ToggleSwitch x:Name="WsModeSwitch" OffContent="新手模式" OnContent="进阶模式"
+                                          MinWidth="0" Toggled="WsMode_Toggled" />
+                            <TextBlock x:Name="WsModeHint" Style="{StaticResource HintText}" VerticalAlignment="Center"
+                                       Text="新手模式只显示模板和参数；需要改代码时切到进阶。" />
                         </StackPanel>
                     </Grid>
                 </Border>
@@ -898,11 +914,70 @@
                     <Grid Grid.Column="1" RowSpacing="10">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
-                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition x:Name="WsCodeRow" Height="*" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
-                        <Border Style="{StaticResource CardStyle}" Padding="14,10">
+                        <Border x:Name="WsBeginnerCard" Style="{StaticResource CardStyle}" Padding="14,12">
+                            <StackPanel Spacing="8">
+                                <StackPanel Spacing="2">
+                                    <TextBlock Text="选一个模板开始" Style="{StaticResource SectionTitle}" />
+                                    <TextBlock Style="{StaticResource HintText}"
+                                               Text="点卡片载入示例 → 点右上角「保存并启用」→ 在下方拖动滑块微调，改完立即生效。" />
+                                </StackPanel>
+                                <Grid ColumnSpacing="8" RowSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Button Tag="1" Click="WsTemplateCard_Click" HorizontalAlignment="Stretch"
+                                            HorizontalContentAlignment="Left" Padding="12,8">
+                                        <StackPanel Spacing="1">
+                                            <TextBlock Text="空气感" FontWeight="SemiBold" />
+                                            <TextBlock Text="提亮高频，人声更通透" Style="{StaticResource HintText}" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Button Grid.Column="1" Tag="3" Click="WsTemplateCard_Click"
+                                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="12,8">
+                                        <StackPanel Spacing="1">
+                                            <TextBlock Text="立体声加宽" FontWeight="SemiBold" />
+                                            <TextBlock Text="拉开左右声场" Style="{StaticResource HintText}" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Button Grid.Row="1" Tag="2" Click="WsTemplateCard_Click"
+                                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="12,8">
+                                        <StackPanel Spacing="1">
+                                            <TextBlock Text="温和饱和" FontWeight="SemiBold" />
+                                            <TextBlock Text="加一点密度和温度" Style="{StaticResource HintText}" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Button Grid.Row="1" Grid.Column="1" Tag="4" Click="WsTemplateCard_Click"
+                                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="12,8">
+                                        <StackPanel Spacing="1">
+                                            <TextBlock Text="低频收紧" FontWeight="SemiBold" />
+                                            <TextBlock Text="切掉喷麦与桌面震动" Style="{StaticResource HintText}" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Button Grid.Row="2" Tag="0" Click="WsTemplateCard_Click"
+                                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="12,8">
+                                        <StackPanel Spacing="1">
+                                            <TextBlock Text="空白模板" FontWeight="SemiBold" />
+                                            <TextBlock Text="从最小骨架自己写" Style="{StaticResource HintText}" />
+                                        </StackPanel>
+                                    </Button>
+                                </Grid>
+                                <TextBlock x:Name="WsBeginnerHint" Style="{StaticResource HintText}"
+                                           Text="不确定选哪个？先试「空气感」，对直播人声最稳。担心效果可以点「测试」先离线跑一遍。" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border x:Name="WsMetaCard" Grid.Row="1" Style="{StaticResource CardStyle}" Padding="14,10">
                             <Grid ColumnSpacing="10" RowSpacing="6">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -943,7 +1018,7 @@
                             </Grid>
                         </Border>
 
-                        <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="12">
+                        <Border x:Name="WsCodeCard" Grid.Row="2" Style="{StaticResource CardStyle}" Padding="12">
                             <Grid RowSpacing="6">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -969,7 +1044,7 @@
                             </Grid>
                         </Border>
 
-                        <Border Grid.Row="2" Style="{StaticResource CardStyle}" Padding="12,10">
+                        <Border Grid.Row="3" Style="{StaticResource CardStyle}" Padding="12,10">
                             <Grid RowSpacing="4">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -1105,6 +1180,211 @@
                         </Grid>
                     </Border>
                 </Grid>
+            </Grid>
+
+            <!-- 手机麦克风 -->
+            <Grid x:Name="PageMobileMic" Visibility="Collapsed" Padding="18,14,18,18" ColumnSpacing="14">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="356" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Border Style="{StaticResource CardStyle}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Spacing="10">
+                            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                <Border x:Name="MicStateDot" Width="9" Height="9" CornerRadius="4.5"
+                                        Background="#8A8078" VerticalAlignment="Center" />
+                                <TextBlock Text="手机麦克风" Style="{StaticResource SectionTitle}" />
+                                <TextBlock x:Name="MicStateText" Text="未启动" Style="{StaticResource HintText}"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Text="手机采集、Wi-Fi 直传，电脑端做增益 / 高通 / 噪声门，再进入效果器链路。音频只在局域网内传输，不经过任何服务器。" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button x:Name="MicToggleButton" Content="启动服务"
+                                        Style="{StaticResource AccentButtonStyle}" Click="MicToggle_Click" />
+                                <Button Content="复制连接信息" Click="MicCopy_Click" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Content="打开安装页" Click="MicInstallPage_Click" />
+                                <Button Content="定位安装包" Click="MicApk_Click" />
+                            </StackPanel>
+
+                            <Border Style="{StaticResource InnerCardStyle}">
+                                <StackPanel Spacing="4">
+                                    <TextBlock Text="电脑地址" Style="{StaticResource MetricLabel}" />
+                                    <TextBlock x:Name="MicEndpointText" Text="服务未启动"
+                                               FontFamily="{StaticResource CodeFontFamily}" FontSize="15" />
+                                    <TextBlock Text="连接 PIN" Style="{StaticResource MetricLabel}" Margin="0,8,0,0" />
+                                    <TextBlock x:Name="MicPinText" Text="——" FontFamily="{StaticResource CodeFontFamily}"
+                                               FontSize="26" FontWeight="SemiBold" CharacterSpacing="140"
+                                               Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                </StackPanel>
+                            </Border>
+
+                            <Grid x:Name="MicQrRow" ColumnSpacing="10" Visibility="Collapsed">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="6">
+                                    <Border x:Name="MicConnectQrBox" Background="White" CornerRadius="10" Padding="6">
+                                        <Image x:Name="MicConnectQr" Height="148" Stretch="Uniform" />
+                                    </Border>
+                                    <TextBlock Text="扫码连接手机" Style="{StaticResource HintText}"
+                                               HorizontalAlignment="Center" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Spacing="6">
+                                    <Border x:Name="MicInstallQrBox" Background="White" CornerRadius="10" Padding="6">
+                                        <Image x:Name="MicInstallQr" Height="148" Stretch="Uniform" />
+                                    </Border>
+                                    <TextBlock Text="扫码安装 App" Style="{StaticResource HintText}"
+                                               HorizontalAlignment="Center" />
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock x:Name="MicQrHint" Style="{StaticResource HintText}"
+                                       Text="手机与电脑连同一个 Wi-Fi，用系统相机或微信扫码；已装 App 会自动带出地址与 PIN。" />
+                            <Border Style="{StaticResource InnerCardStyle}">
+                                <StackPanel Spacing="4">
+                                    <TextBlock Text="手机端还能调" Style="{StaticResource MetricLabel}" />
+                                    <TextBlock Style="{StaticResource HintText}"
+                                               Text="采样率、帧长、采集源，系统降噪 / 回声消除，以及手机本地增益；锁屏后由前台服务继续推流。" />
+                                    <TextBlock Style="{StaticResource HintText}"
+                                               Text="电脑端的增益、高通、噪声门、抖动缓冲在这页右侧随时可改，手机 App 里也能同步调节。" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Border>
+
+                <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
+                    <StackPanel Spacing="12">
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel Spacing="12">
+                                <TextBlock Text="连接状态" Style="{StaticResource SectionTitle}" />
+                                <Grid RowSpacing="10" ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <StackPanel>
+                                        <TextBlock x:Name="MicClientsText" Text="0" Style="{StaticResource ValueText}" />
+                                        <TextBlock Text="已连接设备" Style="{StaticResource MetricLabel}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock x:Name="MicRateText" Text="—" Style="{StaticResource ValueText}" />
+                                        <TextBlock Text="手机采样率" Style="{StaticResource MetricLabel}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock x:Name="MicLevelText" Text="—" Style="{StaticResource ValueText}" />
+                                        <TextBlock Text="输入电平" Style="{StaticResource MetricLabel}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="1">
+                                        <TextBlock x:Name="MicBufferText" Text="—" Style="{StaticResource ValueText}" />
+                                        <TextBlock Text="缓冲" Style="{StaticResource MetricLabel}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="1" Grid.Column="1">
+                                        <TextBlock x:Name="MicPacketsText" Text="0" Style="{StaticResource ValueText}" />
+                                        <TextBlock Text="接收包数" Style="{StaticResource MetricLabel}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="1" Grid.Column="2">
+                                        <TextBlock x:Name="MicDropText" Text="0" Style="{StaticResource ValueText}" />
+                                        <TextBlock Text="丢包 / 溢出" Style="{StaticResource MetricLabel}" />
+                                    </StackPanel>
+                                </Grid>
+                                <ProgressBar x:Name="MicLevelBar" Height="6" Maximum="100" Value="0" />
+                                <TextBlock x:Name="MicDeviceText" Style="{StaticResource HintText}"
+                                           Text="等待手机连接…" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="细节调节" Style="{StaticResource SectionTitle}" />
+                                <TextBlock Style="{StaticResource HintText}"
+                                           Text="作用于手机送来的音频，改完立即生效；手机 App 里也能调同一组参数。" />
+
+                                <Grid ColumnSpacing="10" Margin="0,8,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="110" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="66" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="输入增益" VerticalAlignment="Center" />
+                                    <Slider x:Name="MicGainSlider" Grid.Column="1" ValueChanged="MicSlider_Changed" />
+                                    <TextBlock x:Name="MicGainValue" Grid.Column="2" HorizontalAlignment="Right"
+                                               Style="{StaticResource ValueText}" />
+                                </Grid>
+
+                                <Grid ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="110" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="66" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="高通" VerticalAlignment="Center" />
+                                    <Slider x:Name="MicHpfSlider" Grid.Column="1" ValueChanged="MicSlider_Changed" />
+                                    <TextBlock x:Name="MicHpfValue" Grid.Column="2" HorizontalAlignment="Right"
+                                               Style="{StaticResource ValueText}" />
+                                </Grid>
+
+                                <Grid ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="110" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="66" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="噪声门" VerticalAlignment="Center" />
+                                    <Slider x:Name="MicGateSlider" Grid.Column="1" ValueChanged="MicSlider_Changed" />
+                                    <TextBlock x:Name="MicGateValue" Grid.Column="2" HorizontalAlignment="Right"
+                                               Style="{StaticResource ValueText}" />
+                                </Grid>
+
+                                <Grid ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="110" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="66" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="抖动缓冲" VerticalAlignment="Center" />
+                                    <Slider x:Name="MicJitterSlider" Grid.Column="1" ValueChanged="MicSlider_Changed" />
+                                    <TextBlock x:Name="MicJitterValue" Grid.Column="2" HorizontalAlignment="Right"
+                                               Style="{StaticResource ValueText}" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="输入源" Style="{StaticResource SectionTitle}" />
+                                <RadioButton x:Name="MicSourceDevice" GroupName="micSource"
+                                             Content="电脑声卡输入（默认）" Checked="MicSource_Changed" />
+                                <RadioButton x:Name="MicSourceMobile" GroupName="micSource"
+                                             Content="手机麦克风（Wi-Fi）" Checked="MicSource_Changed" />
+                                <TextBlock Style="{StaticResource HintText}"
+                                           Text="切换输入源后，回到「主控」页重新开始，才会用新的输入。" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="三步上手" Style="{StaticResource SectionTitle}" />
+                                <TextBlock Style="{StaticResource HintText}"
+                                           Text="1. 点「启动服务」，记下电脑地址与 PIN。" />
+                                <TextBlock Style="{StaticResource HintText}"
+                                           Text="2. 手机上安装 Intro Voice Mic，扫码或手填地址和 PIN，点连接。" />
+                                <TextBlock Style="{StaticResource HintText}"
+                                           Text="3. 把输入源切到手机麦克风，回「主控」页开始；手机锁屏也能继续推流。" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
             </Grid>
 
             <!-- 插件市场 -->
