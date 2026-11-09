@@ -107,6 +107,8 @@ def _validate_entry(item: dict) -> dict | None:
         "download": str(item.get("download") or ""),
         "sha256": str(item.get("sha256") or "").lower(),
         "sizeMb": float(item.get("sizeMb") or 0),
+        "copyright": str(item.get("copyright") or ""),
+        "include": [str(x) for x in (item.get("include") or []) if str(x).strip()],
     }
 
 
@@ -188,11 +190,15 @@ def installed_plugins(root: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 # 安装 / 卸载
 # ---------------------------------------------------------------------------
-def _safe_extract(archive: Path, target: Path) -> int:
+def _safe_extract(archive: Path, target: Path, only: list[str] | None = None) -> int:
+    """解压安装包。only 非空时只保留匹配前缀的条目（例如只要 Effects 那个 bundle）。"""
     count = 0
+    prefixes = [p.replace("\\", "/") for p in (only or [])]
     with zipfile.ZipFile(archive) as zf:
         for info in zf.infolist():
             name = info.filename.replace("\\", "/")
+            if prefixes and not any(name.startswith(p) for p in prefixes):
+                continue
             if name.startswith("/") or ".." in name.split("/"):
                 raise RuntimeError(f"压缩包包含非法路径：{info.filename}")
             if info.is_dir():
@@ -230,7 +236,7 @@ def install(root: Path, entry: dict, progress=None) -> dict:
             raise RuntimeError(f"SHA-256 不匹配（期望 {entry['sha256'][:12]}…，实际 {digest[:12]}…）")
         unpacked = staging / "unpacked"
         unpacked.mkdir()
-        count = _safe_extract(archive, unpacked)
+        count = _safe_extract(archive, unpacked, entry.get("include"))
         if count == 0:
             raise RuntimeError("安装包内没有 .vst3 / .dll 文件")
         target_dir.parent.mkdir(parents=True, exist_ok=True)

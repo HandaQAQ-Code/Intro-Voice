@@ -14,30 +14,31 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- 顶栏 -->
-        <Border Grid.Row="0" Padding="18,10"
+        <!-- 顶栏：整条作为可拖拽标题区，右侧留给系统窗口按钮 -->
+        <Border x:Name="AppTitleBar" Grid.Row="0" Padding="16,8,150,8"
                 Background="{ThemeResource LayerFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
                 BorderThickness="0,0,0,1">
             <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                    <Border Width="30" Height="30" CornerRadius="8"
-                            Background="{ThemeResource AccentFillColorDefaultBrush}">
-                        <FontIcon Glyph="&#xE9E9;" FontSize="15"
-                                  Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
-                    </Border>
-                    <StackPanel Spacing="0" VerticalAlignment="Center">
-                        <TextBlock Text="Record Out" FontSize="16" FontWeight="SemiBold" />
-                        <TextBlock Text="直播调音台" FontSize="11"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Grid x:Name="AppDragRegion" Background="Transparent" VerticalAlignment="Stretch"
+                      MinWidth="220">
+                    <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center"
+                                IsHitTestVisible="False">
+                        <Image Source="ms-appx:///Assets/app-icon.png" Width="30" Height="30" />
+                        <StackPanel Spacing="0" VerticalAlignment="Center">
+                            <TextBlock Text="Intro Voice" FontSize="15" FontWeight="SemiBold" />
+                            <TextBlock Text="音拓 · 直播调音台" FontSize="11"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
                     </StackPanel>
-                </StackPanel>
+                </Grid>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center"
                             Margin="12,0,0,0">
@@ -52,7 +53,7 @@
                     </Border>
                 </StackPanel>
 
-                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                     <ProgressRing x:Name="BusyRing" Width="18" Height="18" IsActive="False" />
                     <Button x:Name="MuteButton" Content="静音" Click="Mute_Click" IsEnabled="False" />
                     <Button x:Name="StartButton" Content="启动链路" Style="{StaticResource AccentButtonStyle}"
@@ -69,18 +70,8 @@
                         SelectionChanged="Nav_SelectionChanged">
 
             <NavigationView.PaneHeader>
-                <StackPanel Orientation="Horizontal" Spacing="10" Margin="4,8,0,10">
-                    <Border Width="30" Height="30" CornerRadius="8"
-                            Background="{ThemeResource AccentFillColorDefaultBrush}">
-                        <FontIcon Glyph="&#xE9E9;" FontSize="15"
-                                  Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
-                    </Border>
-                    <StackPanel VerticalAlignment="Center">
-                        <TextBlock Text="Record Out" FontSize="14" FontWeight="SemiBold" />
-                        <TextBlock Text="直播调音台" FontSize="11"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                    </StackPanel>
-                </StackPanel>
+                <TextBlock Text="工作区" FontSize="11" Margin="12,14,0,6"
+                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
             </NavigationView.PaneHeader>
 
             <NavigationView.MenuItems>
@@ -110,17 +101,6 @@
                         <FontIcon Glyph="&#xE719;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
-                <NavigationViewItem Tag="presets">
-                    <NavigationViewItem.Content>
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBlock Text="预设" />
-                            <InfoBadge x:Name="PresetBadge" Value="0" Visibility="Collapsed" />
-                        </StackPanel>
-                    </NavigationViewItem.Content>
-                    <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE7C3;" />
-                    </NavigationViewItem.Icon>
-                </NavigationViewItem>
                 <NavigationViewItem Content="帮助与更新" Tag="help">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE897;" />
@@ -129,7 +109,7 @@
             </NavigationView.MenuItems>
 
             <NavigationView.PaneFooter>
-                <TextBlock Text="v1.0.0 · 免安装版" FontSize="11" Margin="6,0,0,8"
+                <TextBlock Text="Intro Voice 1.0.0" FontSize="11" Margin="6,0,0,8"
                            Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
             </NavigationView.PaneFooter>
 
@@ -142,33 +122,64 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <Border Height="112" CornerRadius="12">
+                    <Border Height="196" CornerRadius="14">
                         <Grid>
                             <Image Source="ms-appx:///Assets/hero.png" Stretch="UniformToFill" />
                             <Border>
                                 <Border.Background>
                                     <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
-                                        <GradientStop Color="#E6000000" Offset="0" />
-                                        <GradientStop Color="#99000000" Offset="0.45" />
-                                        <GradientStop Color="#00000000" Offset="0.85" />
+                                        <GradientStop Color="#F2000000" Offset="0" />
+                                        <GradientStop Color="#B3000000" Offset="0.42" />
+                                        <GradientStop Color="#00000000" Offset="0.88" />
                                     </LinearGradientBrush>
                                 </Border.Background>
                             </Border>
-                            <Grid Padding="20,14">
+                            <Grid Padding="28,22">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <StackPanel VerticalAlignment="Center" Spacing="3">
-                                    <TextBlock Text="RECORD OUT · 直播调音台" Style="{StaticResource HeroEyebrow}" />
-                                    <TextBlock Text="为直播而生的 AI 人声链" Style="{StaticResource HeroTitle}" />
-                                    <TextBlock Text="声纹提取 · 实时降噪 · 超分重建 · VST3 与内置效果 · 直送 OBS"
+                                <StackPanel VerticalAlignment="Center" Spacing="8">
+                                    <TextBlock Text="INTRO VOICE · 音拓" Style="{StaticResource HeroEyebrow}" />
+                                    <TextBlock Text="让每一次开口，都像在录音棚"
+                                               FontSize="30" FontWeight="Bold" Foreground="White"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Text="AI 声纹提取 · 实时降噪 · 超分重建 · 内置效果与 VST3 · 一键送进 OBS"
                                                Style="{StaticResource HeroCaption}" />
+                                    <StackPanel Orientation="Horizontal" Spacing="6" Margin="0,8,0,0">
+                                        <Border CornerRadius="11" Padding="10,3" Background="#26FFFFFF"
+                                                BorderBrush="#33FFFFFF" BorderThickness="1">
+                                            <TextBlock Text="麦克风" FontSize="11" Foreground="White" />
+                                        </Border>
+                                        <TextBlock Text="→" Foreground="#99FFFFFF" VerticalAlignment="Center" />
+                                        <Border CornerRadius="11" Padding="10,3" Background="#26FFFFFF"
+                                                BorderBrush="#33FFFFFF" BorderThickness="1">
+                                            <TextBlock Text="AI 人声" FontSize="11" Foreground="White" />
+                                        </Border>
+                                        <TextBlock Text="→" Foreground="#99FFFFFF" VerticalAlignment="Center" />
+                                        <Border CornerRadius="11" Padding="10,3" Background="#26FFFFFF"
+                                                BorderBrush="#33FFFFFF" BorderThickness="1">
+                                            <TextBlock Text="内置效果" FontSize="11" Foreground="White" />
+                                        </Border>
+                                        <TextBlock Text="→" Foreground="#99FFFFFF" VerticalAlignment="Center" />
+                                        <Border CornerRadius="11" Padding="10,3" Background="#26FFFFFF"
+                                                BorderBrush="#33FFFFFF" BorderThickness="1">
+                                            <TextBlock Text="VST3" FontSize="11" Foreground="White" />
+                                        </Border>
+                                        <TextBlock Text="→" Foreground="#99FFFFFF" VerticalAlignment="Center" />
+                                        <Border CornerRadius="11" Padding="10,3" Background="#F2C08A2E">
+                                            <TextBlock Text="CABLE → OBS" FontSize="11" Foreground="White" />
+                                        </Border>
+                                    </StackPanel>
                                 </StackPanel>
-                                <Border Grid.Column="1" CornerRadius="10" Padding="10,4" Background="#33FFFFFF"
-                                        BorderBrush="#44FFFFFF" BorderThickness="1" VerticalAlignment="Top">
-                                    <TextBlock Text="v1.0.0" FontSize="11" Foreground="White" />
-                                </Border>
+                                <StackPanel Grid.Column="1" Spacing="6" VerticalAlignment="Top">
+                                    <Border CornerRadius="10" Padding="10,4" Background="#33FFFFFF"
+                                            BorderBrush="#44FFFFFF" BorderThickness="1" HorizontalAlignment="Right">
+                                        <TextBlock Text="v1.0.0" FontSize="11" Foreground="White" />
+                                    </Border>
+                                    <TextBlock Text="48 kHz · 立体声" FontSize="11" Foreground="#B3FFFFFF"
+                                               HorizontalAlignment="Right" />
+                                </StackPanel>
                             </Grid>
                         </Grid>
                     </Border>
@@ -226,48 +237,6 @@
 
                     <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
                         <StackPanel Spacing="12">
-                            <Border Style="{StaticResource CardStyle}">
-                                <StackPanel Spacing="10">
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Text="信号链" Style="{StaticResource SectionTitle}" />
-                                        <TextBlock Grid.Column="1" Text="48 kHz · 立体声" Style="{StaticResource HintText}"
-                                                   VerticalAlignment="Center" />
-                                    </Grid>
-                                    <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                                        <Border Style="{StaticResource PillBorder}">
-                                            <TextBlock Text="麦克风" FontSize="12" />
-                                        </Border>
-                                        <TextBlock Text="→" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                                        <Border Style="{StaticResource PillBorder}">
-                                            <TextBlock Text="AI 人声" FontSize="12" />
-                                        </Border>
-                                        <TextBlock Text="→" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                                        <Border Style="{StaticResource PillBorder}">
-                                            <TextBlock Text="内置效果" FontSize="12" />
-                                        </Border>
-                                        <TextBlock Text="→" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                                        <Border Style="{StaticResource PillBorder}">
-                                            <TextBlock Text="VST3" FontSize="12" />
-                                        </Border>
-                                        <TextBlock Text="→" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                                        <Border Style="{StaticResource PillBorder}">
-                                            <TextBlock Text="限幅" FontSize="12" />
-                                        </Border>
-                                        <TextBlock Text="→" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                                        <Border Style="{StaticResource PillBorder}"
-                                                Background="{ThemeResource AccentFillColorSecondaryBrush}">
-                                            <TextBlock Text="CABLE Input" FontSize="12" />
-                                        </Border>
-                                    </StackPanel>
-                                    <TextBlock x:Name="ChainHint" Style="{StaticResource HintText}"
-                                               Text="每一段都可单独关闭；关闭内置效果器与 VST3 后即为原声直通。" />
-                                </StackPanel>
-                            </Border>
-
                             <Border Style="{StaticResource CardStyle}">
                                 <StackPanel Spacing="8">
                                     <Grid>
@@ -468,6 +437,8 @@
                                                     <ToggleSwitch Grid.Column="1" x:Name="HpfSwitch" MinWidth="0"
                                                                   OnContent="开" OffContent="关" Toggled="Dsp_Toggled" />
                                                 </Grid>
+
+                                        <TextBlock Text="人声建议：高通 80–120 Hz（男声偏低、女声偏高），低通保持 16 kHz 以上；24 dB/oct 更干净。" Style="{StaticResource HintText}" />
                                                 <Grid ColumnSpacing="8">
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="68" />
@@ -528,6 +499,8 @@
                                             <ToggleSwitch Grid.Column="1" x:Name="CompSwitch" MinWidth="0"
                                                           OnContent="开" OffContent="关" Toggled="Dsp_Toggled" />
                                         </Grid>
+
+                                        <TextBlock Text="人声建议：阈值 -20~-14 dB、3:1、启动 5–10 ms、释放 80–150 ms，压缩量 3–6 dB 最自然。" Style="{StaticResource HintText}" />
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="64" />
@@ -606,6 +579,8 @@
                                             <ToggleSwitch Grid.Column="1" x:Name="EqSwitch" MinWidth="0"
                                                           OnContent="开" OffContent="关" Toggled="Dsp_Toggled" />
                                         </Grid>
+
+                                        <TextBlock Text="人声建议：低频 +2~3 dB 增加厚度，1–3 kHz 提 1~2 dB 增清晰度，高频 +1~2 dB 添空气感；多用衰减少用提升。" Style="{StaticResource HintText}" />
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="64" />
@@ -680,6 +655,8 @@
                                             <ToggleSwitch Grid.Column="1" x:Name="GateSwitch" MinWidth="0"
                                                           OnContent="开" OffContent="关" Toggled="Dsp_Toggled" />
                                         </Grid>
+
+                                        <TextBlock Text="人声建议：阈值 -50~-45 dB、保持 60–100 ms、释放 120–200 ms、衰减 -18 dB；过激会切掉尾音。" Style="{StaticResource HintText}" />
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="64" />
@@ -733,6 +710,63 @@
                                 </Border>
                             </StackPanel>
                         </Grid>
+                        <Border Style="{StaticResource CardStyle}">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="380" />
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Spacing="8">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="效果预设" Style="{StaticResource SectionTitle}" />
+                                        <TextBlock x:Name="PresetCountText" Grid.Column="1" Text="0 套"
+                                                   Style="{StaticResource HintText}" VerticalAlignment="Center" />
+                                    </Grid>
+                                    <Grid>
+                                        <ListView x:Name="PresetList" Height="190" SelectionMode="Single"
+                                                  SelectionChanged="PresetList_SelectionChanged">
+                                            <ListView.ItemTemplate>
+                                                <DataTemplate x:DataType="local:PresetItem">
+                                                    <StackPanel Padding="0,5">
+                                                        <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Text="{x:Bind Subtitle}" FontSize="12"
+                                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </ListView.ItemTemplate>
+                                        </ListView>
+                                        <StackPanel x:Name="PresetEmpty" VerticalAlignment="Center" Spacing="6"
+                                                    HorizontalAlignment="Center" MaxWidth="300">
+                                            <Image Source="ms-appx:///Assets/empty-presets.png"
+                                                   Width="72" Height="72" Stretch="Uniform" />
+                                            <TextBlock Text="还没有保存过预设" HorizontalAlignment="Center" FontWeight="SemiBold" />
+                                            <TextBlock Text="调好上面的参数后，在右侧起个名字保存。"
+                                                       Style="{StaticResource HintText}" TextAlignment="Center" />
+                                        </StackPanel>
+                                    </Grid>
+                                </StackPanel>
+
+                                <StackPanel Grid.Column="1" Spacing="8">
+                                    <TextBlock Style="{StaticResource HintText}"
+                                               Text="预设保存的是「插件链 + AI 档位 + 全部效果参数」，载入前请先停止处理。" />
+                                    <TextBox x:Name="PresetNameBox" PlaceholderText="预设名称（例如：直播·暖声）" />
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <Button Content="保存当前" Click="PresetSave_Click"
+                                                Style="{StaticResource AccentButtonStyle}" />
+                                        <Button Content="载入" Click="PresetLoad_Click" />
+                                        <Button Content="删除" Click="PresetDelete_Click" />
+                                    </StackPanel>
+                                    <TextBlock Style="{StaticResource HintText}"
+                                               Text="建议：直播 / 录音 / 连麦各存一套，切换场景时不用重新调。" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
             </Grid>
@@ -839,100 +873,6 @@
                 </Grid>
             </Grid>
 
-            <!-- 预设 -->
-<Grid x:Name="PagePresets" Visibility="Collapsed">
-                <Grid Padding="18,14,18,18" ColumnSpacing="14">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="440" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-
-                    <Border x:Name="PresetCard" Style="{StaticResource CardStyle}">
-                        <Grid RowSpacing="10">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
-
-                            <StackPanel Spacing="2">
-                                <TextBlock Text="预设" Style="{StaticResource SectionTitle}" />
-                                <TextBlock x:Name="PresetCountText" Text="0 套" Style="{StaticResource HintText}" />
-                            </StackPanel>
-
-                            <Grid Grid.Row="1">
-                                <ListView x:Name="PresetList" SelectionMode="Single" MinHeight="320"
-                                          SelectionChanged="PresetList_SelectionChanged">
-                                    <ListView.ItemTemplate>
-                                        <DataTemplate x:DataType="local:PresetItem">
-                                            <StackPanel Padding="0,5">
-                                                <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold"
-                                                           TextTrimming="CharacterEllipsis" />
-                                                <TextBlock Text="{x:Bind Subtitle}" FontSize="12"
-                                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                            </StackPanel>
-                                        </DataTemplate>
-                                    </ListView.ItemTemplate>
-                                </ListView>
-                                <StackPanel x:Name="PresetEmpty" VerticalAlignment="Center" Spacing="6"
-                                            HorizontalAlignment="Center" MaxWidth="300">
-                                    <Image Source="ms-appx:///Assets/empty-presets.png"
-                                           Style="{StaticResource EmptyStateImage}" />
-                                    <TextBlock Text="还没有保存过预设" HorizontalAlignment="Center" FontWeight="SemiBold" />
-                                    <TextBlock Text="把当前插件链和效果参数存成一套，直播、录音、连麦各一套，切换时不用重调。"
-                                               Style="{StaticResource HintText}" TextAlignment="Center" />
-                                </StackPanel>
-                            </Grid>
-
-                            <StackPanel Grid.Row="2" Spacing="8">
-                                <TextBox x:Name="PresetNameBox" PlaceholderText="预设名称（例如：直播·暖声）" />
-                                <StackPanel Orientation="Horizontal" Spacing="6">
-                                    <Button Content="保存当前" Click="PresetSave_Click" Style="{StaticResource AccentButtonStyle}" />
-                                    <Button Content="载入" Click="PresetLoad_Click" />
-                                    <Button Content="删除" Click="PresetDelete_Click" />
-                                </StackPanel>
-                            </StackPanel>
-                            <TextBlock Grid.Row="3" Style="{StaticResource HintText}"
-                                       Text="保存在 data/mixer/presets；载入会覆盖当前插件链与效果参数。" />
-                        </Grid>
-                    </Border>
-
-                    <Border Grid.Column="1" Style="{StaticResource CardStyle}">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
-                            <StackPanel Spacing="10">
-                                <TextBlock Text="一套预设包含" Style="{StaticResource SectionTitle}" />
-                                <TextBlock Style="{StaticResource HintText}"
-                                           Text="· VST3 插件的顺序、旁通状态、全部参数与插件内部状态" />
-                                <TextBlock Style="{StaticResource HintText}"
-                                           Text="· AI 档位、降噪、输入增益、底噪门限、超分强度与延迟模式" />
-                                <TextBlock Style="{StaticResource HintText}"
-                                           Text="· 内置效果器的全部参数（滤波、EQ、压缩、门限）" />
-                                <TextBlock Style="{StaticResource HintText}" Margin="0,8,0,0"
-                                           Text="建议按使用场景命名，例如「直播」「录音」「连麦」。载入后仍可继续微调，再覆盖保存。" />
-                            </StackPanel>
-
-                            <Border Grid.Row="2" Style="{StaticResource InnerCardStyle}">
-                                <StackPanel Spacing="6">
-                                    <TextBlock Text="推荐起点" Style="{StaticResource SectionTitle}" />
-                                    <TextBlock Style="{StaticResource HintText}"
-                                               Text="直播：CPU 档 · 降噪开 · 高通 80 Hz · 压缩 3:1 / 阈值 -18 dB · 高频 +2 dB" />
-                                    <TextBlock Style="{StaticResource HintText}"
-                                               Text="录音：GPU 档 · 超分 1.0 · 高通 60 Hz · 压缩 2:1 / 阈值 -14 dB · 关噪声门" />
-                                    <TextBlock Style="{StaticResource HintText}"
-                                               Text="连麦：CPU 档 · 低延迟模式 · 门限 -45 dB · 压缩 4:1，避免环境声串进语音" />
-                                </StackPanel>
-                            </Border>
-                        </Grid>
-                    </Border>
-                </Grid>
-            </Grid>
-
             <!-- 插件市场 -->
             <Grid x:Name="PageMarket" Visibility="Collapsed" Padding="18,14,18,18" RowSpacing="12">
                 <Grid.RowDefinitions>
@@ -981,11 +921,8 @@
                                             <TextBlock Text="{x:Bind Subtitle}" Style="{StaticResource HintText}" />
                                             <TextBlock Text="{x:Bind Summary}" Style="{StaticResource HintText}" />
                                         </StackPanel>
-                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6"
-                                                    VerticalAlignment="Center">
-                                            <Button Content="{x:Bind ActionText}" Tag="{x:Bind Slug}"
-                                                    Click="MarketAction_Click" />
-                                        </StackPanel>
+                                        <Button Grid.Column="1" Content="{x:Bind ActionText}" Tag="{x:Bind Slug}"
+                                                VerticalAlignment="Center" Click="MarketAction_Click" />
                                     </Grid>
                                 </DataTemplate>
                             </ListView.ItemTemplate>
@@ -1050,7 +987,7 @@
                         <Border Style="{StaticResource CardStyle}">
                             <StackPanel Spacing="6">
                                 <TextBlock Text="关于" Style="{StaticResource SectionTitle}" />
-                                <TextBlock Text="Record Out · 直播调音台 1.0.0" Style="{StaticResource HintText}" />
+                                <TextBlock Text="Intro Voice 音拓 1.0.0" Style="{StaticResource HintText}" />
                                 <TextBlock Text="WinUI 3 界面 + Python 音频引擎 + 原生 VST3 宿主；内置效果器为 numpy/scipy 实时实现。"
                                            Style="{StaticResource HintText}" />
                             </StackPanel>

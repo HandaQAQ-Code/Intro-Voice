@@ -1,5 +1,7 @@
 using System.Collections.ObjectModel;
+using System.Runtime.InteropServices;
 using System.Text.Json;
+using WinRT.Interop;
 using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using Microsoft.UI.Dispatching;
@@ -64,6 +66,7 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        SetupTitleBar();
         App.Trace("mainwindow: xaml loaded");
         // Negative ranges must be set in code: assigning Maximum below the
         // default Minimum (0) is rejected by RangeBase during XAML load.
@@ -71,7 +74,7 @@ public sealed partial class MainWindow : Window
         FloorSlider.Maximum = -20;
         FloorSlider.Value = -55;
         SetupDspControls();
-        Title = "Record Out · 直播调音台";
+        Title = "Intro Voice 音拓";
         try
         {
             SystemBackdrop = new MicaBackdrop();
@@ -144,6 +147,33 @@ public sealed partial class MainWindow : Window
         App.Trace("mainwindow: ctor end");
         _ = ConnectAsync();
         App.Trace("mainwindow: connect started");
+    }
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    /// <summary>把自绘顶栏变成真正的标题栏，去掉系统标题栏这一层；并抹掉窗口外描边。</summary>
+    private void SetupTitleBar()
+    {
+        try
+        {
+            ExtendsContentIntoTitleBar = true;
+            SetTitleBar(AppDragRegion);
+            var bar = AppWindow.TitleBar;
+            var transparent = Windows.UI.Color.FromArgb(0, 0, 0, 0);
+            bar.ButtonBackgroundColor = transparent;
+            bar.ButtonInactiveBackgroundColor = transparent;
+            bar.ButtonHoverBackgroundColor = Windows.UI.Color.FromArgb(24, 0, 0, 0);
+            bar.ButtonPressedBackgroundColor = Windows.UI.Color.FromArgb(36, 0, 0, 0);
+
+            var hwnd = WindowNative.GetWindowHandle(this);
+            int none = unchecked((int)0xFFFFFFFE);  // DWMWA_COLOR_NONE
+            DwmSetWindowAttribute(hwnd, 34, ref none, sizeof(int));
+        }
+        catch
+        {
+            // 老系统不支持时退回系统标题栏，不影响功能
+        }
     }
 
     // ------------------------------------------------------------------
@@ -672,7 +702,6 @@ public sealed partial class MainWindow : Window
         double min = Math.Max(360, available - 78);
         PluginChainCard.MinHeight = min;
         PluginParamsCard.MinHeight = min;
-        PresetCard.MinHeight = min;
     }
 
     // ------------------------------------------------------------------
@@ -689,17 +718,36 @@ public sealed partial class MainWindow : Window
         var pages = new (string Tag, Grid Page)[]
         {
             ("live", PageLive), ("fx", PageFx), ("plugins", PagePlugins),
-            ("market", PageMarket), ("presets", PagePresets), ("help", PageHelp),
+            ("market", PageMarket), ("help", PageHelp),
         };
         foreach (var (pageTag, page) in pages)
         {
             bool show = pageTag == tag;
             page.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-            if (show) FadeIn(page);
+            if (show)
+            {
+                FadeIn(page);
+                ResetScroll(page);
+            }
         }
 
         if (tag == "market" && _market.Count == 0)
             _ = LoadMarketAsync(false);
+    }
+
+    /// <summary>切页时把内容滚回顶部，避免沿用上一页的滚动位置。</summary>
+    private static void ResetScroll(DependencyObject root)
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is ScrollViewer viewer)
+            {
+                viewer.ChangeView(null, 0, null, true);
+                return;
+            }
+            ResetScroll(child);
+        }
     }
 
     /// <summary>页面切换的 180 ms 淡入，Composition 驱动，不触发重新布局。</summary>
@@ -777,8 +825,8 @@ public sealed partial class MainWindow : Window
             bool cached = catalog.TryGetProperty("cached", out var c) && c.ValueKind == JsonValueKind.True;
             MarketSourceText.Text = $"目录：{Str(catalog, "source")}" + (cached ? "（本地缓存）" : "");
             bool bundled = catalog.TryGetProperty("bundled", out var b) && b.ValueKind == JsonValueKind.True;
-            MarketStatusText.Text = bundled
-                ? $"远程目录不可用，已使用随包目录（离线）· {_market.Count} 个条目"
+            MarketStatusText.Text = cached || bundled
+                ? $"远程目录暂不可用，显示本地目录 · {_market.Count} 个条目 · 已安装 {installedSet.Count} 个"
                 : error.Length > 0
                     ? "目录加载失败，点「刷新目录」重试"
                     : $"共 {_market.Count} 个条目 · 已安装 {installedSet.Count} 个 · 安装目录 {Str(result, "userDir")}";
@@ -1581,8 +1629,7 @@ public sealed partial class MainWindow : Window
             PresetEmpty.Visibility = _presets.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             PresetList.Visibility = _presets.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
             PresetCountText.Text = _presets.Count == 0 ? "还没有预设" : $"{_presets.Count} 套预设";
-            PresetBadge.Value = _presets.Count;
-            PresetBadge.Visibility = _presets.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+
         }
         catch (Exception ex)
         {

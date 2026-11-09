@@ -1,14 +1,14 @@
-# Record Out · 直播调音台
+# Intro Voice 音拓 · 直播调音台
 
 Windows 本地软调音台：AI 人声处理 + 内置效果器 + 原生 VST3 宿主，处理结果经 VB-CABLE 送入 OBS。
 
-- **界面**：WinUI 3（.NET 8，非打包模式），左侧 NavigationView 六个分页、明暗主题自适应
+- **界面**：WinUI 3（.NET 8，非打包模式），单层标题栏 + 左侧 NavigationView 五个分页、明暗主题自适应
 - **可视化**：自研 `SpectrumView` 32 段实时频谱（Composition 动画）、电平表、信号链示意
 - **音频引擎**：Python 进程内的 WASAPI 链路，命名管道控制协议（`protocol: 1`）
 - **AI**：声纹提取（VoxLock）+ 降噪（DPDFNet）+ 超分（FlashSR / LavaSR）
 - **内置效果**：高通/低通、三段 EQ、压缩、噪声门、输出限幅（`mixer_dsp.py`）
 - **插件**：原生 C++ VST3 宿主（`native/vst3host`），支持扫描、排序、旁通、参数与状态
-- **市场**：远程目录 + SHA-256 校验安装/卸载（`market_service.py`），远程不可用时回退随包目录
+- **市场**：远程目录 + SHA-256 校验安装/卸载（`market_service.py`），内置 GPL-3.0 的 Surge XT Effects 可一键安装
 - **更新**：GitHub Releases 检查、下载校验、退出后替换与失败回滚（待真实 Release 验证）
 
 ## 目录

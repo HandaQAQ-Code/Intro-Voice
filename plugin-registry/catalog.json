@@ -3,6 +3,23 @@
   "updatedAt": "2026-11-09",
   "plugins": [
     {
+      "slug": "surge-xt-effects",
+      "name": "Surge XT Effects",
+      "vendor": "Surge Synth Team",
+      "version": "Nightly 2026-11-05",
+      "license": "GPL-3.0",
+      "copyright": "© Surge Synth Team · GPL-3.0 · 源码 https://github.com/surge-synthesizer/surge",
+      "type": "zip",
+      "homepage": "https://surge-synthesizer.github.io/",
+      "download": "https://github.com/surge-synthesizer/surge/releases/download/Nightly/surge-xt-win64-NIGHTLY-2026-11-05-d152d79-pluginsonly.zip",
+      "sha256": "a6e7ca1f1c3da7d4bc4233c4c493ec49b26b0a271b5a8f91777ccc5d72b33d42",
+      "sizeMb": 44.6,
+      "include": [
+        "Surge XT Effects.vst3/"
+      ],
+      "summary": "开源效果器套件：合唱、延迟、混响、失真、EQ 等 20 余种。安装包取自上游官方 Nightly 构建，只解压 Effects 插件。"
+    },
+    {
       "slug": "loudmax",
       "name": "LoudMax",
       "vendor": "Thomas Mundt",
@@ -31,16 +48,6 @@
       "type": "link",
       "homepage": "https://www.voxengo.com/product/span/",
       "summary": "实时频谱分析，用来找共振和低频堆积。"
-    },
-    {
-      "slug": "surge-xt",
-      "name": "Surge XT",
-      "vendor": "Surge Synth Team",
-      "version": "1.3",
-      "license": "GPL-3.0",
-      "type": "link",
-      "homepage": "https://surge-synthesizer.github.io/",
-      "summary": "开源合成器，安装包内含 Surge XT Effects 效果器套件。"
     }
   ]
 }
