@@ -3,6 +3,19 @@
   "updatedAt": "2026-11-09",
   "plugins": [
     {
+      "slug": "air-detail",
+      "name": "空气感",
+      "vendor": "Intro Voice",
+      "version": "1.0.0",
+      "license": "MIT",
+      "copyright": "© Intro Voice · MIT",
+      "type": "workshop",
+      "summary": "抬起 6 kHz 以上的空气感，附输出补偿；适合人声与木吉他。",
+      "homepage": "https://github.com/HandaQAQ-Code/Intro-Voice-Plugin-Market/tree/main/plugins/air-detail",
+      "manifest": "https://raw.githubusercontent.com/HandaQAQ-Code/Intro-Voice-Plugin-Market/main/plugins/air-detail/plugin.json",
+      "sizeMb": 0.7
+    },
+    {
       "slug": "surge-xt-effects",
       "name": "Surge XT Effects",
       "vendor": "Surge Synth Team",

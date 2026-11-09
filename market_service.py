@@ -23,7 +23,8 @@ from pathlib import Path
 
 APP_VERSION = "1.0.0"
 REPO = "HandaQAQ-Code/Intro-Voice"
-CATALOG_URL = f"https://raw.githubusercontent.com/{REPO}/main/plugin-registry/catalog.json"
+MARKET_REPO = "HandaQAQ-Code/Intro-Voice-Plugin-Market"
+CATALOG_URL = f"https://raw.githubusercontent.com/{MARKET_REPO}/main/catalog.json"
 RELEASES_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 MAX_DOWNLOAD_MB = 800
 USER_AGENT = f"RecordOutMixer/{APP_VERSION}"
@@ -103,11 +104,12 @@ def _validate_entry(item: dict) -> dict | None:
         "license": str(item.get("license") or ""),
         "summary": str(item.get("summary") or ""),
         "homepage": str(item.get("homepage") or ""),
-        "type": kind if kind in ("zip", "link") else "link",
+        "type": kind if kind in ("zip", "link", "workshop") else "link",
         "download": str(item.get("download") or ""),
         "sha256": str(item.get("sha256") or "").lower(),
         "sizeMb": float(item.get("sizeMb") or 0),
         "copyright": str(item.get("copyright") or ""),
+        "manifest": str(item.get("manifest") or ""),
         "include": [str(x) for x in (item.get("include") or []) if str(x).strip()],
     }
 
@@ -144,8 +146,9 @@ def fetch_catalog(root: Path, url: str | None = None, force: bool = False) -> di
     except Exception as exc:
         if cached.get("plugins"):
             return {**cached, "cached": True, "error": f"远程目录不可用，显示上次缓存：{exc}"}
-        bundled = root / "plugin-registry" / "catalog.json"
-        if bundled.is_file():
+        for bundled in (root / "plugin-market" / "catalog.json",):
+            if not bundled.is_file():
+                continue
             try:
                 payload = json.loads(bundled.read_text(encoding="utf-8"))
                 entries = [e for e in (_validate_entry(i) for i in payload.get("plugins") or []) if e]
@@ -153,7 +156,7 @@ def fetch_catalog(root: Path, url: str | None = None, force: bool = False) -> di
                     return {"source": str(bundled), "plugins": entries, "cached": True,
                             "bundled": True, "error": f"远程目录不可用，已加载随包目录：{exc}"}
             except (OSError, ValueError):
-                pass
+                continue
         return {"source": target, "plugins": [], "cached": False,
                 "error": f"无法获取插件目录：{exc}"}
 
@@ -217,6 +220,15 @@ def _safe_extract(archive: Path, target: Path, only: list[str] | None = None) ->
 
 
 def install(root: Path, entry: dict, progress=None) -> dict:
+    if entry.get("type") == "workshop":
+        import workshop_service
+        saved = workshop_service.install_from_market(root, entry)
+        data = installed_map(root)
+        data[entry["slug"]] = {"name": entry["name"], "version": entry.get("version", ""),
+                               "path": saved["path"], "kind": "workshop",
+                               "installedAt": time.strftime("%Y-%m-%d %H:%M:%S")}
+        _save_installed(root, data)
+        return {"installed": data[entry["slug"]], "path": saved["path"]}
     if entry.get("type") != "zip" or not entry.get("download"):
         raise RuntimeError("该条目没有可直接安装的安装包，请打开官方页面")
     if not entry.get("sha256"):
@@ -255,9 +267,18 @@ def uninstall(root: Path, slug: str) -> dict:
     data = installed_map(root)
     info = data.get(slug)
     if not info:
+        # 本地保存或用「创意工坊」直接创建的插件不在安装清单里
+        import workshop_service
+        local = workshop_service.workshop_dir(root) / slug
+        if local.is_dir():
+            shutil.rmtree(local, ignore_errors=True)
+            return {"removed": slug, "local": True}
         raise RuntimeError("未安装该插件")
     folder = Path(info.get("path") or "")
-    base = user_vst3_dir().resolve()
+    if info.get("kind") == "workshop":
+        base = (root / "data" / "mixer" / "workshop").resolve()
+    else:
+        base = user_vst3_dir().resolve()
     try:
         resolved = folder.resolve()
     except OSError:

@@ -81,7 +81,26 @@ public sealed class PresetItem
 {
     public string Name { get; init; } = "";
     public string SavedAt { get; init; } = "";
+    public int Plugins { get; init; }
+    public string Ai { get; init; } = "AI 关";
+    public string Effects { get; init; } = "";
+    public int Workshop { get; init; }
+
     public string Subtitle => SavedAt.Length > 0 ? $"保存于 {SavedAt}" : "已保存的预设";
+
+    /// <summary>载入前的参考数据：这套预设到底包含什么。</summary>
+    public string Detail
+    {
+        get
+        {
+            var parts = new List<string> { $"{Plugins} 个插件", Ai };
+            parts.Add(Effects.Length > 0 ? Effects : "效果器旁通");
+            if (Workshop > 0) parts.Add($"工坊 {Workshop} 个");
+            parts.Add(Subtitle);
+            return string.Join(" · ", parts);
+        }
+    }
+
     public override string ToString() => Name;
 }
 
@@ -92,7 +111,63 @@ public sealed class MarketItem
     public string Badge { get; init; } = "";
     public string Subtitle { get; init; } = "";
     public string Summary { get; init; } = "";
+    public string Kind { get; init; } = "link";
     public bool Installed { get; init; }
     public bool CanInstall { get; init; }
-    public string ActionText => Installed ? "卸载" : CanInstall ? "安装" : "查看官网";
+    public bool IsWorkshop => Kind == "workshop";
+    public string ActionText => Installed ? "卸载" : CanInstall || IsWorkshop ? "安装" : "查看官网";
+}
+
+public sealed class WorkshopItem
+{
+    public string Slug { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string Author { get; init; } = "";
+    public string Version { get; init; } = "";
+    public string License { get; init; } = "";
+    public string Description { get; init; } = "";
+    public string Code { get; init; } = "";
+    public string CompileError { get; init; } = "";
+    public bool Enabled { get; init; }
+    public List<WorkshopParam> Params { get; init; } = new();
+
+    public string Subtitle
+    {
+        get
+        {
+            var state = Enabled ? "已启用" : "未启用";
+            var error = CompileError.Length > 0 ? " · 编译失败" : "";
+            return $"v{Version} · {Params.Count} 参数 · {state}{error}";
+        }
+    }
+
+    public override string ToString() => Name;
+}
+
+public sealed class WorkshopParam : INotifyPropertyChanged
+{
+    private double _value;
+
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "";
+    public double Min { get; init; }
+    public double Max { get; init; } = 1;
+    public double Step { get; init; }
+    public string Unit { get; init; } = "";
+
+    public double Value
+    {
+        get => _value;
+        set
+        {
+            if (Math.Abs(_value - value) < 1e-9) return;
+            _value = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Value)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Display)));
+        }
+    }
+
+    public string Display => Unit.Length > 0 ? $"{Value:0.##} {Unit}" : $"{Value:0.##}";
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 }

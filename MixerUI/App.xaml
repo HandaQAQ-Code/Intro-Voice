@@ -10,6 +10,18 @@
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
 
+            <!-- 中文统一走「微软雅黑 UI」：系统默认的 XamlAutoFontFamily 会把中文交给
+                 DirectWrite 兜底，粗体是合成出来的假粗，字缘发糊。这里显式指定，
+                 控件（ThemeResource 引用）与 TextBlock（隐式样式）同时生效。 -->
+            <FontFamily x:Key="ContentControlThemeFontFamily">Microsoft YaHei UI</FontFamily>
+            <FontFamily x:Key="AppFontFamily">Microsoft YaHei UI</FontFamily>
+            <FontFamily x:Key="CodeFontFamily">Consolas</FontFamily>
+
+            <Style x:Key="AppText" TargetType="TextBlock">
+                <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
+            </Style>
+            <Style TargetType="TextBlock" BasedOn="{StaticResource AppText}" />
+
             <!-- 卡片：统一 10px 圆角与 16px 内边距，接近商业音频软件的密度 -->
             <Style x:Key="CardStyle" TargetType="Border">
                 <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
@@ -28,12 +40,12 @@
                 <Setter Property="Padding" Value="12" />
             </Style>
 
-            <Style x:Key="SectionTitle" TargetType="TextBlock">
+            <Style x:Key="SectionTitle" TargetType="TextBlock" BasedOn="{StaticResource AppText}">
                 <Setter Property="FontWeight" Value="SemiBold" />
                 <Setter Property="FontSize" Value="15" />
             </Style>
 
-            <Style x:Key="CaptionText" TargetType="TextBlock">
+            <Style x:Key="CaptionText" TargetType="TextBlock" BasedOn="{StaticResource AppText}">
                 <Setter Property="FontSize" Value="12" />
                 <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
                 <Setter Property="TextWrapping" Value="Wrap" />
@@ -42,14 +54,14 @@
             <Style x:Key="HintText" TargetType="TextBlock" BasedOn="{StaticResource CaptionText}" />
 
             <!-- 数值：等宽 + 半粗，仪表读数不跳动 -->
-            <Style x:Key="ValueText" TargetType="TextBlock">
+            <Style x:Key="ValueText" TargetType="TextBlock" BasedOn="{StaticResource AppText}">
                 <Setter Property="FontSize" Value="13" />
                 <Setter Property="FontWeight" Value="SemiBold" />
                 <Setter Property="FontFamily" Value="Consolas" />
                 <Setter Property="VerticalAlignment" Value="Center" />
             </Style>
 
-            <Style x:Key="MetricLabel" TargetType="TextBlock">
+            <Style x:Key="MetricLabel" TargetType="TextBlock" BasedOn="{StaticResource AppText}">
                 <Setter Property="FontSize" Value="12" />
                 <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
                 <Setter Property="VerticalAlignment" Value="Center" />
@@ -65,17 +77,17 @@
             </Style>
 
             <!-- 首页横幅：深色图上叠白字，两张图不随主题反转 -->
-            <Style x:Key="HeroTitle" TargetType="TextBlock">
+            <Style x:Key="HeroTitle" TargetType="TextBlock" BasedOn="{StaticResource AppText}">
                 <Setter Property="FontSize" Value="21" />
                 <Setter Property="FontWeight" Value="SemiBold" />
                 <Setter Property="Foreground" Value="White" />
             </Style>
-            <Style x:Key="HeroCaption" TargetType="TextBlock">
+            <Style x:Key="HeroCaption" TargetType="TextBlock" BasedOn="{StaticResource AppText}">
                 <Setter Property="FontSize" Value="12" />
                 <Setter Property="Foreground" Value="#D8FFFFFF" />
                 <Setter Property="TextWrapping" Value="Wrap" />
             </Style>
-            <Style x:Key="HeroEyebrow" TargetType="TextBlock">
+            <Style x:Key="HeroEyebrow" TargetType="TextBlock" BasedOn="{StaticResource AppText}">
                 <Setter Property="FontSize" Value="11" />
                 <Setter Property="CharacterSpacing" Value="120" />
                 <Setter Property="Foreground" Value="#B8FFFFFF" />

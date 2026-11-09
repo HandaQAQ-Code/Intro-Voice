@@ -26,6 +26,7 @@ import soxr
 
 from mixer_dsp import DspChain, default_params as dsp_default_params, merge_params as dsp_merge_params
 import market_service
+import workshop_service
 
 ROOT = Path(__file__).resolve().parent
 MIXER_DATA = ROOT / "data" / "mixer"
@@ -552,6 +553,8 @@ class MixerEngine:
         self.latency_samples = 0
         self.dsp = DspChain(CHAIN_RATE, 2)
         self.dsp_params = dsp_default_params()
+        self.workshop = workshop_service.WorkshopRunner(CHAIN_RATE)
+        self.workshop_error = ""
         self.spectrum = [0.0] * 32
 
     # -- lifecycle ---------------------------------------------------------
@@ -776,6 +779,9 @@ class MixerEngine:
         # 内置效果器：HPF/LPF → Gate → 压缩 → EQ，位于 VST3 链之前、输出限幅之前。
         if len(stereo):
             stereo = self.dsp.process(stereo)
+        # 创意工坊插件：用户脚本，位于内置效果之后、VST3 之前。
+        if len(stereo):
+            stereo = self.workshop.process(stereo)
         if self.chain.count() > 0:
             left, right = self.chain.process(stereo[:, 0], stereo[:, 1])
             stereo = np.stack([left, right], axis=1)
@@ -958,7 +964,8 @@ class Service:
     def _load_settings(self) -> dict:
         defaults = {"input": "", "output": "", "aiMode": "off", "denoise": False,
                     "gainDb": 0.0, "floorDb": -55.0, "srStrength": 0.7, "latencyMode": "balanced",
-                    "dsp": dsp_default_params()}
+                    "dsp": dsp_default_params(),
+                    "workshop": {"order": [], "enabled": {}, "params": {}}}
         try:
             saved = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
             if isinstance(saved, dict):
@@ -967,6 +974,14 @@ class Service:
             pass
         # 嵌套 DSP 参数按版本合并，旧配置缺键时补默认值。
         defaults["dsp"] = dsp_merge_params(dsp_default_params(), defaults.get("dsp") or {})
+        shop = defaults.get("workshop")
+        if not isinstance(shop, dict):
+            shop = {}
+        defaults["workshop"] = {
+            "order": [x for x in (shop.get("order") or []) if isinstance(x, str)],
+            "enabled": dict(shop.get("enabled") or {}),
+            "params": dict(shop.get("params") or {}),
+        }
         return defaults
 
     def _save_settings(self) -> None:
@@ -977,6 +992,15 @@ class Service:
             os.replace(temp, SETTINGS_FILE)
         except OSError:
             LOG.exception("保存调音台设置失败")
+
+    def _apply_workshop(self) -> list[str]:
+        """把 settings.workshop 编译成可执行的阶段，运行中也能热更新。"""
+        if not self.engine:
+            return []
+        stages, errors = workshop_service.build_stages(ROOT, self.settings.get("workshop"))
+        self.engine.workshop.set_stages(stages)
+        self.engine.workshop_error = "；".join(errors)
+        return errors
 
     def _devices(self) -> dict:
         hosts = sd.query_hostapis()
@@ -1076,6 +1100,8 @@ class Service:
                 "outputRate": eng.output_rate if eng else CHAIN_RATE,
                 "system": self.monitor.metrics(),
                 "dsp": eng.dsp.metrics() if eng else {},
+                "workshop": {**(eng.workshop.metrics() if eng else {}),
+                             "error": getattr(eng, "workshop_error", "") if eng else ""},
                 "progress": self.progress,
                 "spectrum": getattr(eng, "spectrum", []) if eng else [],
                 "chainError": self.chain_error}
@@ -1158,6 +1184,7 @@ class Service:
         self.settings["output"] = device_label(cfg["outputDevice"])
         self.settings["dsp"] = cfg["dsp"]
         self._save_settings()
+        self._apply_workshop()
         self.engine.start(cfg)
         self.running = True
         return {"started": True, "status": self._status()}
@@ -1260,7 +1287,14 @@ class Service:
     # -- 插件市场 -----------------------------------------------------------
     def cmd_market(self, request):
         catalog = market_service.fetch_catalog(ROOT, request.get("url"), bool(request.get("force")))
-        return {"catalog": catalog, "installed": market_service.installed_plugins(ROOT),
+        installed = market_service.installed_plugins(ROOT)
+        known = {item["slug"] for item in installed}
+        for plugin in workshop_service.list_plugins(ROOT):
+            if plugin["slug"] not in known:
+                installed.append({"slug": plugin["slug"], "name": plugin["name"],
+                                  "version": plugin["version"], "local": True,
+                                  "path": str(workshop_service.plugin_dir(ROOT, plugin["slug"]))})
+        return {"catalog": catalog, "installed": installed,
                 "userDir": str(market_service.user_vst3_dir())}
 
     def _catalog_entry(self, slug: str) -> dict:
@@ -1300,6 +1334,99 @@ class Service:
         os.startfile(target)  # noqa: S606 - 只打开用户可见的官方链接
         return {"opened": target}
 
+    # -- 创意工坊 -----------------------------------------------------------
+    def _workshop_state(self) -> dict:
+        state = self.settings.get("workshop")
+        if not isinstance(state, dict):
+            state = {"order": [], "enabled": {}, "params": {}}
+            self.settings["workshop"] = state
+        state.setdefault("order", [])
+        state.setdefault("enabled", {})
+        state.setdefault("params", {})
+        return state
+
+    def cmd_workshop_list(self, request):
+        state = self._workshop_state()
+        items = []
+        for plugin in workshop_service.list_plugins(ROOT):
+            compiled = workshop_service.compile_manifest(plugin)
+            values = workshop_service.normalize_params(
+                compiled.params, (state.get("params") or {}).get(plugin["slug"]) or {})
+            items.append({
+                **plugin,
+                "params": compiled.params,
+                "values": values,
+                "compileError": compiled.error,
+                "enabled": bool((state.get("enabled") or {}).get(plugin["slug"], False)),
+                "inChain": plugin["slug"] in (state.get("order") or []),
+            })
+        return {"plugins": items, "order": state.get("order") or [],
+                "marketRepo": workshop_service.MARKET_REPO,
+                "workshopDir": str(workshop_service.workshop_dir(ROOT))}
+
+    def cmd_workshop_save(self, request):
+        manifest = request.get("plugin") or {}
+        saved = workshop_service.save_plugin(ROOT, manifest)
+        state = self._workshop_state()
+        slug = saved["slug"]
+        if slug not in state["order"]:
+            state["order"].append(slug)
+        state["enabled"][slug] = True
+        state["params"].setdefault(slug, {})
+        self._apply_workshop()
+        self._save_settings()
+        return {"plugin": saved, "plugins": workshop_service.list_plugins(ROOT),
+                "order": state["order"], "enabled": state["enabled"]}
+
+    def cmd_workshop_delete(self, request):
+        slug = str(request.get("slug") or "")
+        workshop_service.delete_plugin(ROOT, slug)
+        state = self._workshop_state()
+        state["order"] = [x for x in state["order"] if x != slug]
+        state["enabled"].pop(slug, None)
+        state["params"].pop(slug, None)
+        self._apply_workshop()
+        self._save_settings()
+        return {"removed": slug}
+
+    def cmd_workshop_enable(self, request):
+        slug = str(request.get("slug") or "")
+        enabled = bool(request.get("enabled", True))
+        state = self._workshop_state()
+        if enabled and slug not in state["order"]:
+            state["order"].append(slug)
+        state["enabled"][slug] = enabled
+        self._apply_workshop()
+        self._save_settings()
+        errors = getattr(self.engine, "workshop_error", "") if self.engine else ""
+        return {"slug": slug, "enabled": enabled, "error": errors}
+
+    def cmd_workshop_params(self, request):
+        slug = str(request.get("slug") or "")
+        values = request.get("params") or {}
+        state = self._workshop_state()
+        current = dict(state["params"].get(slug) or {})
+        current.update({k: float(v) for k, v in values.items() if isinstance(v, (int, float))})
+        state["params"][slug] = current
+        if self.engine:
+            self.engine.workshop.update_params(slug, current)
+        self._save_settings()
+        return {"slug": slug, "params": current}
+
+    def cmd_workshop_test(self, request):
+        manifest = request.get("plugin") or {}
+        return workshop_service.test_manifest(manifest)
+
+    def cmd_workshop_export(self, request):
+        slug = str(request.get("slug") or "")
+        target = workshop_service.export_zip(ROOT, slug)
+        return {"file": str(target)}
+
+    def cmd_workshop_publish(self, request):
+        slug = str(request.get("slug") or "")
+        result = workshop_service.publish(ROOT, slug, str(request.get("message") or ""))
+        return result
+
     # -- 自动更新 -----------------------------------------------------------
     def cmd_update_check(self, request):
         return market_service.check_update(ROOT)
@@ -1337,17 +1464,47 @@ class Service:
         self.should_stop = True
         return {"applying": True, "script": str(script)}
 
+    @staticmethod
+    def _preset_summary(payload: dict) -> dict:
+        """给界面用的预设内容摘要：让用户在载入前知道这套预设都包含什么。"""
+        cfg = payload.get("config") or {}
+        dsp = cfg.get("dsp") or {}
+        effects = []
+        if (dsp.get("hpf") or {}).get("enabled") or (dsp.get("lpf") or {}).get("enabled"):
+            effects.append("滤波")
+        if (dsp.get("eq") or {}).get("enabled"):
+            effects.append("EQ")
+        if (dsp.get("comp") or {}).get("enabled"):
+            effects.append("压缩")
+        if (dsp.get("gate") or {}).get("enabled"):
+            effects.append("门限")
+        if dsp and not dsp.get("enabled"):
+            effects = []
+        mode = str(cfg.get("aiMode") or "off")
+        return {
+            "plugins": len(payload.get("plugins") or []),
+            "aiMode": mode,
+            "aiLabel": {"off": "AI 关", "cpu": "AI CPU", "gpu": "AI GPU"}.get(mode, mode),
+            "dspEnabled": bool(dsp.get("enabled")),
+            "effects": effects,
+            "workshop": len((cfg.get("workshop") or {}).get("order") or []),
+        }
+
     def cmd_preset_list(self, request):
         items = []
         for path in sorted(PRESET_DIR.glob("*.json"), key=lambda p: p.stem.lower()):
             saved = ""
+            summary = {"plugins": 0, "aiMode": "off", "aiLabel": "AI 关",
+                       "dspEnabled": False, "effects": [], "workshop": 0}
             try:
-                saved = str(json.loads(path.read_text(encoding="utf-8")).get("savedAt") or "")
-            except (OSError, ValueError):
-                saved = ""
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                saved = str(payload.get("savedAt") or "")
+                summary = self._preset_summary(payload)
+            except (OSError, ValueError, TypeError):
+                payload = {}
             if not saved:
                 saved = time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime))
-            items.append({"name": path.stem, "savedAt": saved})
+            items.append({"name": path.stem, "savedAt": saved, **summary})
         return {"presets": items, "names": [i["name"] for i in items]}
 
     def cmd_preset_save(self, request):
@@ -1431,6 +1588,15 @@ class Service:
             if self.engine:
                 self.engine.dsp_params = self.settings["dsp"]
                 self.engine.dsp.set_params(self.settings["dsp"])
+        if "workshop" in cfg:
+            shop = cfg.get("workshop") or {}
+            self.settings["workshop"] = {
+                "order": [x for x in (shop.get("order") or []) if isinstance(x, str)],
+                "enabled": dict(shop.get("enabled") or {}),
+                "params": dict(shop.get("params") or {}),
+            }
+        # 工坊阶段按新设置重新编译并热替换。
+        self._apply_workshop()
         self._save_settings()
         return {"plugins": self._plugins(), "settings": self.settings}
 

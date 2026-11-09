@@ -8,6 +8,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Composition;
@@ -111,14 +112,20 @@ public sealed partial class MainWindow : Window
         LatencyCombo.SelectedIndex = 0;
 
         ChainList.ItemsSource = _plugins;
-        PresetList.ItemsSource = _presets;
+        PresetCombo.ItemsSource = _presets;
         MarketList.ItemsSource = _market;
+        WorkshopList.ItemsSource = _workshop;
+        foreach (var (name, _) in WorkshopTemplates)
+            WorkshopTemplateCombo.Items.Add(name);
+        foreach (var license in new[] { "MIT", "GPL-3.0", "CC0-1.0", "专有" })
+            WsLicenseCombo.Items.Add(license);
+        WsLicenseCombo.SelectedIndex = 0;
+        WorkshopList.Visibility = Visibility.Collapsed;
+        WorkshopEmpty.Visibility = Visibility.Visible;
         MessageList.ItemsSource = _messages;
         // 空状态：没有数据时显示引导文案，列表隐藏。
         ChainList.Visibility = Visibility.Collapsed;
-        PresetList.Visibility = Visibility.Collapsed;
         ParamEmpty.Visibility = Visibility.Visible;
-        PresetEmpty.Visibility = Visibility.Visible;
         ChainEmpty.Visibility = Visibility.Visible;
 
         _statusTimer = DispatcherQueue.CreateTimer();
@@ -717,8 +724,8 @@ public sealed partial class MainWindow : Window
     {
         var pages = new (string Tag, Grid Page)[]
         {
-            ("live", PageLive), ("fx", PageFx), ("plugins", PagePlugins),
-            ("market", PageMarket), ("help", PageHelp),
+            ("live", PageLive), ("fx", PageFx), ("workshop", PageWorkshop),
+            ("plugins", PagePlugins), ("market", PageMarket), ("help", PageHelp),
         };
         foreach (var (pageTag, page) in pages)
         {
@@ -733,6 +740,8 @@ public sealed partial class MainWindow : Window
 
         if (tag == "market" && _market.Count == 0)
             _ = LoadMarketAsync(false);
+        if (tag == "workshop" && _workshop.Count == 0)
+            _ = LoadWorkshopAsync();
     }
 
     /// <summary>切页时把内容滚回顶部，避免沿用上一页的滚动位置。</summary>
@@ -771,6 +780,479 @@ public sealed partial class MainWindow : Window
     }
 
     // ------------------------------------------------------------------
+    // creative workshop
+    // ------------------------------------------------------------------
+    private readonly ObservableCollection<WorkshopItem> _workshop = new();
+    private List<WorkshopParam> _workshopParams = new();
+    private string? _currentWorkshopSlug;
+    private string _codeSnapshot = "";
+    private bool _workshopLoading;
+    private bool _suppressWsToggle;
+    private bool _suppressWsParams;
+    private DispatcherQueueTimer? _wsParamTimer;
+
+    private static readonly (string Name, string Code)[] WorkshopTemplates =
+    {
+        ("空白模板", """
+PARAMS = [
+    {"id": "gain", "name": "输出", "min": -24.0, "max": 12.0, "default": 0.0, "step": 0.5, "unit": "dB"},
+]
+
+def process(x, sr, params):
+    # x 是 (块长度, 2) 的 float32；必须返回同形状数组
+    return (x * db_to_gain(params["gain"])).astype(np.float32)
+"""),
+        ("空气感", """
+PARAMS = [
+    {"id": "amount", "name": "空气感", "min": 0.0, "max": 1.0, "default": 0.35, "step": 0.01},
+    {"id": "trim", "name": "输出", "min": -12.0, "max": 6.0, "default": 0.0, "step": 0.5, "unit": "dB"},
+]
+
+def process(x, sr, params):
+    # 一阶差分近似高频搁架：抬起 6 kHz 以上，再按 trim 收电平
+    high = np.diff(x, axis=0, prepend=x[:1])
+    y = x + high * (params["amount"] * 2.0)
+    return (y * db_to_gain(params["trim"])).astype(np.float32)
+"""),
+        ("温和饱和", """
+PARAMS = [
+    {"id": "drive", "name": "驱动", "min": 1.0, "max": 8.0, "default": 2.0, "step": 0.1},
+    {"id": "mix", "name": "混合", "min": 0.0, "max": 1.0, "default": 0.6, "step": 0.01},
+]
+
+def process(x, sr, params):
+    wet = soft_clip(x * params["drive"], 1.0) * 0.6
+    return (x * (1.0 - params["mix"]) + wet * params["mix"]).astype(np.float32)
+"""),
+        ("立体声加宽", """
+PARAMS = [
+    {"id": "width", "name": "宽度", "min": 0.0, "max": 2.0, "default": 1.3, "step": 0.05},
+]
+
+def process(x, sr, params):
+    mid = (x[:, 0] + x[:, 1]) * 0.5
+    side = (x[:, 0] - x[:, 1]) * 0.5 * params["width"]
+    return np.stack([mid + side, mid - side], axis=1).astype(np.float32)
+"""),
+        ("低频收紧", """
+PARAMS = [
+    {"id": "freq", "name": "截止", "min": 40.0, "max": 220.0, "default": 90.0, "step": 5.0, "unit": "Hz"},
+]
+
+def process(x, sr, params):
+    # 一阶高通：保留人声基频，切掉桌面震动与喷麦低频
+    alpha = float(np.exp(-2.0 * np.pi * params["freq"] / sr))
+    y = np.empty_like(x)
+    prev = np.zeros(x.shape[1], dtype=np.float32)
+    for i in range(len(x)):
+        prev = alpha * prev + (1.0 - alpha) * x[i]
+        y[i] = x[i] - prev
+    return y.astype(np.float32)
+"""),
+    };
+
+    private async Task LoadWorkshopAsync(string? select = null)
+    {
+        if (!_connected) return;
+        _workshopLoading = true;
+        try
+        {
+            var result = await _client.CallAsync("workshop_list", null, 20000);
+            var wanted = select ?? _currentWorkshopSlug;
+            _workshop.Clear();
+            if (result.TryGetProperty("plugins", out var plugins) && plugins.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var p in plugins.EnumerateArray())
+                {
+                    var values = p.TryGetProperty("values", out var v) && v.ValueKind == JsonValueKind.Object
+                        ? v : default;
+                    _workshop.Add(new WorkshopItem
+                    {
+                        Slug = Str(p, "slug"),
+                        Name = Str(p, "name"),
+                        Author = Str(p, "author"),
+                        Version = Str(p, "version"),
+                        License = Str(p, "license"),
+                        Description = Str(p, "description"),
+                        Code = Str(p, "code"),
+                        CompileError = Str(p, "compileError"),
+                        Enabled = Bool(p, "enabled"),
+                        Params = ParseWorkshopParams(p, values),
+                    });
+                }
+            }
+
+            WorkshopCountText.Text = $"{_workshop.Count} 个";
+            bool empty = _workshop.Count == 0;
+            WorkshopEmpty.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+            WorkshopList.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
+            if (result.TryGetProperty("workshopDir", out var dir))
+            {
+                WorkshopPathText.Text = "目录：data\\mixer\\workshop";
+                ToolTipService.SetToolTip(WorkshopPathText, dir.GetString());
+            }
+
+            var item = _workshop.FirstOrDefault(w => w.Slug == wanted) ?? _workshop.FirstOrDefault();
+            if (item is not null)
+            {
+                WorkshopList.SelectedItem = item;
+                ApplyWorkshop(item);
+            }
+            else
+            {
+                WorkshopList.SelectedItem = null;
+                ResetWorkshopEditor();
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+        }
+        finally
+        {
+            _workshopLoading = false;
+        }
+    }
+
+    private static List<WorkshopParam> ParseWorkshopParams(JsonElement plugin, JsonElement values)
+    {
+        var list = new List<WorkshopParam>();
+        if (!plugin.TryGetProperty("params", out var defs) || defs.ValueKind != JsonValueKind.Array)
+            return list;
+        foreach (var def in defs.EnumerateArray())
+        {
+            double min = Num(def, "min", 0);
+            double max = Num(def, "max", 1);
+            double step = Num(def, "step", 0);
+            if (step <= 0) step = Math.Max(0.001, (max - min) / 100.0);
+            double value = def.TryGetProperty("default", out var d) ? d.GetDouble() : min;
+            if (values.ValueKind == JsonValueKind.Object &&
+                values.TryGetProperty(Str(def, "id"), out var current))
+                value = current.GetDouble();
+            list.Add(new WorkshopParam
+            {
+                Id = Str(def, "id"),
+                Name = Str(def, "name"),
+                Min = min,
+                Max = max,
+                Step = step,
+                Unit = Str(def, "unit"),
+                Value = value,
+            });
+        }
+        return list;
+    }
+
+    private void WsCode_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_workshopLoading) return;
+        WsCodeStatus.Text = NormalizeNewlines(WsCodeBox.Text) == NormalizeNewlines(_codeSnapshot)
+            ? "已保存"
+            : "草稿 · 未保存";
+    }
+
+    private static string NormalizeNewlines(string text) => text.Replace("\r\n", "\n").Replace('\r', '\n');
+
+    private void ResetWorkshopEditor()
+    {
+        _currentWorkshopSlug = null;
+        WorkshopPublishButton.IsEnabled = false;
+        WsEnableSwitch.IsEnabled = false;
+        WsNameBox.Text = "";
+        WsSlugBox.Text = "";
+        WsAuthorBox.Text = "";
+        WsVersionBox.Text = "1.0.0";
+        WsDescBox.Text = "";
+        WsCodeBox.Text = "";
+        WsCodeStatus.Text = "未保存";
+        _workshopParams = new List<WorkshopParam>();
+        WorkshopParamList.ItemsSource = _workshopParams;
+        _suppressWsToggle = true;
+        WsEnableSwitch.IsOn = false;
+        _suppressWsToggle = false;
+        WorkshopTestText.Text = "点「测试」用 1 秒合成信号离线跑一遍，检查输出电平、峰值与每块耗时。";
+    }
+
+    private void ApplyWorkshop(WorkshopItem item)
+    {
+        _currentWorkshopSlug = item.Slug;
+        WorkshopPublishButton.IsEnabled = true;
+        WsEnableSwitch.IsEnabled = true;
+        WsNameBox.Text = item.Name;
+        WsSlugBox.Text = item.Slug;
+        WsAuthorBox.Text = item.Author;
+        WsVersionBox.Text = item.Version;
+        WsDescBox.Text = item.Description;
+        _codeSnapshot = item.Code;
+        WsCodeBox.Text = item.Code;
+        WsCodeStatus.Text = item.CompileError.Length > 0 ? "编译失败" : "已保存";
+        _workshopParams = item.Params;
+        _suppressWsParams = true;
+        WorkshopParamList.ItemsSource = _workshopParams;
+        _suppressWsParams = false;
+        _suppressWsToggle = true;
+        WsEnableSwitch.IsOn = item.Enabled;
+        _suppressWsToggle = false;
+        if (item.CompileError.Length > 0)
+            WorkshopTestText.Text = $"编译失败：{item.CompileError}";
+    }
+
+    private void WorkshopList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_workshopLoading) return;
+        if (WorkshopList.SelectedItem is WorkshopItem item)
+            ApplyWorkshop(item);
+        else
+            ResetWorkshopEditor();
+    }
+
+    private void WorkshopNew_Click(object sender, RoutedEventArgs e)
+    {
+        WorkshopList.SelectedItem = null;
+        ResetWorkshopEditor();
+        WsAuthorBox.Text = Environment.UserName;
+        ApplyWorkshopTemplate(0);
+        WsNameBox.Focus(FocusState.Programmatic);
+    }
+
+    private void WorkshopTemplate_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (WorkshopTemplateCombo.SelectedIndex >= 0)
+            ApplyWorkshopTemplate(WorkshopTemplateCombo.SelectedIndex);
+    }
+
+    private void ApplyWorkshopTemplate(int index)
+    {
+        if (index < 0 || index >= WorkshopTemplates.Length) return;
+        var (name, code) = WorkshopTemplates[index];
+        WsCodeBox.Text = code;
+        if (index > 0 && WsNameBox.Text.Trim().Length == 0)
+            WsNameBox.Text = name;
+        WsCodeStatus.Text = "模板 · 未保存";
+    }
+
+    private JsonObject BuildWorkshopManifest() => new()
+    {
+        ["name"] = WsNameBox.Text.Trim(),
+        ["slug"] = WsSlugBox.Text.Trim(),
+        ["author"] = WsAuthorBox.Text.Trim(),
+        ["version"] = WsVersionBox.Text.Trim().Length > 0 ? WsVersionBox.Text.Trim() : "1.0.0",
+        ["license"] = WsLicenseCombo.SelectedItem as string ?? "MIT",
+        ["description"] = WsDescBox.Text.Trim(),
+        ["code"] = WsCodeBox.Text,
+    };
+
+    private async void WorkshopSave_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_connected) return;
+        if (WsNameBox.Text.Trim().Length == 0)
+        {
+            ShowError("请填写插件名称", InfoBarSeverity.Warning);
+            return;
+        }
+        if (WsSlugBox.Text.Trim().Length == 0)
+            WsSlugBox.Text = SlugFromName(WsNameBox.Text);
+
+        SetBusy(true, "正在保存工坊插件…");
+        try
+        {
+            var result = await _client.CallAsync("workshop_save",
+                new JsonObject { ["plugin"] = BuildWorkshopManifest() }, 30000);
+            var plugin = result.GetProperty("plugin");
+            var slug = Str(plugin, "slug");
+            await LoadWorkshopAsync(slug);
+            ShowError($"「{Str(plugin, "name")}」已保存并加入效果链", InfoBarSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
+    private static string SlugFromName(string name)
+    {
+        var builder = new System.Text.StringBuilder();
+        foreach (var ch in name.Trim().ToLowerInvariant())
+        {
+            if (ch is >= 'a' and <= 'z' or >= '0' and <= '9') builder.Append(ch);
+            else if (ch is ' ' or '-' or '_') builder.Append('-');
+        }
+        var slug = builder.ToString().Trim('-');
+        return slug.Length > 0 ? slug : "my-plugin";
+    }
+
+    private async void WorkshopTest_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_connected) return;
+        WorkshopTestText.Text = "正在离线测试…";
+        try
+        {
+            var result = await _client.CallAsync("workshop_test",
+                new JsonObject { ["plugin"] = BuildWorkshopManifest() }, 30000);
+            if (!Bool(result, "ok"))
+            {
+                WorkshopTestText.Text = $"测试失败：{Str(result, "error")}";
+                return;
+            }
+            WorkshopTestText.Text =
+                $"通过：RMS {Num(result, "rmsIn", 0):0.000} → {Num(result, "rmsOut", 0):0.000} " +
+                $"（{Num(result, "changeDb", 0):+0.0;-0.0;0} dB）· 峰值 {Num(result, "peak", 0):0.000} " +
+                $"· {Num(result, "msPerBlock", 0):0.000} ms/块（预算 40 ms）";
+            if (result.TryGetProperty("params", out var defs) && defs.ValueKind == JsonValueKind.Array)
+            {
+                _workshopParams = ParseWorkshopParams(result, default);
+                _suppressWsParams = true;
+                WorkshopParamList.ItemsSource = _workshopParams;
+                _suppressWsParams = false;
+            }
+        }
+        catch (Exception ex)
+        {
+            WorkshopTestText.Text = ex.Message;
+        }
+    }
+
+    private async void WorkshopDelete_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_connected) return;
+        var slug = _currentWorkshopSlug;
+        if (slug is null)
+        {
+            ShowError("请先选择要删除的插件", InfoBarSeverity.Warning);
+            return;
+        }
+        if (!await ConfirmAsync("删除工坊插件", $"删除「{WsNameBox.Text}」后无法恢复，确定继续？", "删除"))
+            return;
+        try
+        {
+            await _client.CallAsync("workshop_delete", new JsonObject { ["slug"] = slug }, 15000);
+            await LoadWorkshopAsync();
+            ResetWorkshopEditor();
+            ShowError("已删除", InfoBarSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+        }
+    }
+
+    private async void WsEnable_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_suppressWsToggle || !_connected || _currentWorkshopSlug is null) return;
+        try
+        {
+            var result = await _client.CallAsync("workshop_enable",
+                new JsonObject { ["slug"] = _currentWorkshopSlug, ["enabled"] = WsEnableSwitch.IsOn }, 20000);
+            var error = Str(result, "error");
+            if (error.Length > 0)
+                ShowError($"已切换，但部分插件未加载：{error}", InfoBarSeverity.Warning);
+            await LoadWorkshopAsync(_currentWorkshopSlug);
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+            _suppressWsToggle = true;
+            WsEnableSwitch.IsOn = !WsEnableSwitch.IsOn;
+            _suppressWsToggle = false;
+        }
+    }
+
+    private void WorkshopParam_Changed(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (_suppressWsParams || sender is not Slider slider) return;
+        if (slider.DataContext is not WorkshopParam param) return;
+        param.Value = slider.Value;
+        if (_currentWorkshopSlug is null) return;
+
+        _wsParamTimer ??= DispatcherQueue.CreateTimer();
+        _wsParamTimer.Interval = TimeSpan.FromMilliseconds(220);
+        _wsParamTimer.IsRepeating = false;
+        _wsParamTimer.Tick -= FlushWorkshopParams;
+        _wsParamTimer.Tick += FlushWorkshopParams;
+        _wsParamTimer.Start();
+    }
+
+    private async void FlushWorkshopParams(DispatcherQueueTimer sender, object args)
+    {
+        if (!_connected || _currentWorkshopSlug is null) return;
+        var values = new JsonObject();
+        foreach (var param in _workshopParams)
+            values[param.Id] = param.Value;
+        try
+        {
+            await _client.CallAsync("workshop_params",
+                new JsonObject { ["slug"] = _currentWorkshopSlug, ["params"] = values }, 10000);
+        }
+        catch
+        {
+            // 参数下发的失败不打断拖动，下一次会覆盖。
+        }
+    }
+
+    private async void WorkshopPublish_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_connected) return;
+        if (_currentWorkshopSlug is null)
+        {
+            ShowError("请先保存插件，再发布到市场", InfoBarSeverity.Warning);
+            return;
+        }
+        var license = WsLicenseCombo.SelectedItem as string ?? "MIT";
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = "发布到插件市场",
+            Content = $"将把「{WsNameBox.Text}」推送到自托管仓库 HandaQAQ-Code/Intro-Voice-Plugin-Market。\n\n" +
+                      $"许可：{license}\n发布后所有用户都能在插件市场一键安装；脚本会在本机以 Python 权限执行，" +
+                      "请确认代码没有危险操作。",
+            PrimaryButtonText = "发布",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Close,
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+
+        SetBusy(true, "正在推送到市场仓库…");
+        WorkshopTestText.Text = "正在推送，首次会克隆市场仓库…";
+        try
+        {
+            var result = await _client.CallAsync("workshop_publish",
+                new JsonObject { ["slug"] = _currentWorkshopSlug }, 240000);
+            var commit = Str(result, "commit");
+            var url = Str(result, "url");
+            WorkshopTestText.Text = $"已发布：commit {commit} · {Str(result, "repo")}";
+            var done = new ContentDialog
+            {
+                XamlRoot = Content.XamlRoot,
+                Title = "已发布到市场",
+                Content = $"提交 {commit} 已推送到 {Str(result, "repo")}。\n" +
+                          "其他人刷新插件目录即可看到并一键安装。",
+                PrimaryButtonText = "打开发布页",
+                CloseButtonText = "完成",
+                DefaultButton = ContentDialogButton.Close,
+            };
+            if (await done.ShowAsync() == ContentDialogResult.Primary && url.Length > 0)
+            {
+                try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }); }
+                catch { }
+            }
+            await LoadMarketAsync(true);
+        }
+        catch (Exception ex)
+        {
+            WorkshopTestText.Text = $"发布失败：{ex.Message}";
+            ShowError(ex.Message);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
+    // ------------------------------------------------------------------
     // plugin market
     // ------------------------------------------------------------------
     private async Task LoadMarketAsync(bool force)
@@ -798,8 +1280,11 @@ public sealed partial class MainWindow : Window
                     string vendor = Str(p, "vendor");
                     string version = Str(p, "version");
                     string license = Str(p, "license");
+                    string kind = Str(p, "type");
+                    bool workshop = kind == "workshop";
                     double size = Num(p, "sizeMb", 0);
                     var parts = new List<string>();
+                    if (workshop) parts.Add("创意工坊");
                     if (vendor.Length > 0) parts.Add(vendor);
                     if (version.Length > 0) parts.Add($"v{version}");
                     if (size > 0) parts.Add($"{size:0.#} MB");
@@ -808,11 +1293,13 @@ public sealed partial class MainWindow : Window
                     {
                         Slug = slug,
                         Name = Str(p, "name"),
-                        Badge = license.Length > 0 ? license : "VST3",
+                        Badge = license.Length > 0 ? license : workshop ? "工坊" : "VST3",
                         Subtitle = string.Join(" · ", parts),
                         Summary = Str(p, "summary"),
+                        Kind = kind,
                         Installed = installedSet.Contains(slug),
-                        CanInstall = Str(p, "type") == "zip" && Str(p, "download").Length > 0,
+                        CanInstall = (kind == "zip" && Str(p, "download").Length > 0) ||
+                                     (workshop && Str(p, "manifest").Length > 0),
                     });
                 }
             }
@@ -878,11 +1365,18 @@ public sealed partial class MainWindow : Window
             {
                 await _client.CallAsync("market_uninstall", new JsonObject { ["slug"] = item.Slug }, 30000);
                 ShowError($"已卸载 {item.Name}", InfoBarSeverity.Success);
+                if (item.IsWorkshop)
+                    await LoadWorkshopAsync();
             }
             else
             {
                 await _client.CallAsync("market_install", new JsonObject { ["slug"] = item.Slug }, 300000);
-                ShowError($"{item.Name} 已安装，可在「VST3 插件」页扫描后加入链", InfoBarSeverity.Success);
+                ShowError(item.IsWorkshop
+                        ? $"{item.Name} 已安装，可在「创意工坊」页启用"
+                        : $"{item.Name} 已安装，可在「VST3 插件」页扫描后加入链",
+                    InfoBarSeverity.Success);
+                if (item.IsWorkshop)
+                    await LoadWorkshopAsync(item.Slug);
             }
             await LoadMarketAsync(true);
         }
@@ -1606,30 +2100,38 @@ public sealed partial class MainWindow : Window
             {
                 foreach (var p in array.EnumerateArray())
                 {
-                    // 兼容旧服务：字符串数组；新服务返回 {name, savedAt}。
+                    // 兼容旧服务：字符串数组；新服务返回带内容摘要的对象。
                     if (p.ValueKind == JsonValueKind.String)
                     {
                         items.Add(new PresetItem { Name = p.GetString() ?? "" });
                     }
                     else if (p.ValueKind == JsonValueKind.Object)
                     {
+                        var effects = new List<string>();
+                        if (p.TryGetProperty("effects", out var fx) && fx.ValueKind == JsonValueKind.Array)
+                            foreach (var one in fx.EnumerateArray())
+                                if (one.GetString() is { Length: > 0 } text) effects.Add(text);
                         items.Add(new PresetItem
                         {
                             Name = Str(p, "name"),
                             SavedAt = Str(p, "savedAt"),
+                            Plugins = (int)Num(p, "plugins", 0),
+                            Ai = Str(p, "aiLabel"),
+                            Effects = string.Join(" / ", effects),
+                            Workshop = (int)Num(p, "workshop", 0),
                         });
                     }
                 }
             }
+
+            var previous = select ?? (PresetCombo.SelectedItem as PresetItem)?.Name;
             _presets.Clear();
             foreach (var item in items.Where(n => n.Name.Length > 0))
                 _presets.Add(item);
-            var wanted = select ?? (PresetList.SelectedItem as PresetItem)?.Name;
-            PresetList.SelectedItem = _presets.FirstOrDefault(p => p.Name == wanted);
-            PresetEmpty.Visibility = _presets.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            PresetList.Visibility = _presets.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
-            PresetCountText.Text = _presets.Count == 0 ? "还没有预设" : $"{_presets.Count} 套预设";
 
+            PresetCombo.SelectedItem = _presets.FirstOrDefault(p => p.Name == previous) ?? _presets.FirstOrDefault();
+            PresetCountText.Text = $"{_presets.Count} 套";
+            UpdatePresetDetail();
         }
         catch (Exception ex)
         {
@@ -1637,29 +2139,112 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void PresetList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void UpdatePresetDetail()
     {
-        if (PresetList.SelectedItem is PresetItem item && PresetNameBox.Text.Trim().Length == 0)
-            PresetNameBox.Text = item.Name;
+        bool has = PresetCombo.SelectedItem is PresetItem;
+        if (PresetCombo.SelectedItem is PresetItem item)
+            PresetDetailText.Text = item.Detail;
+        else
+            PresetDetailText.Text = "保存当前的全部设置后，可在这里一键切换场景。";
+        PresetLoadButton.IsEnabled = has;
+        PresetSaveButton.IsEnabled = has;
+        PresetDeleteButton.IsEnabled = has;
+    }
+
+    private void PresetCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        => UpdatePresetDetail();
+
+    private string? CurrentPresetName() => (PresetCombo.SelectedItem as PresetItem)?.Name;
+
+    /// <summary>输入预设名。返回 null 表示用户取消。</summary>
+    private async Task<string?> PromptPresetNameAsync(string title, string initial)
+    {
+        var box = new TextBox
+        {
+            Text = initial,
+            PlaceholderText = "例如：直播·暖声",
+            SelectionStart = initial.Length,
+        };
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = title,
+            Content = box,
+            PrimaryButtonText = "保存",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+            IsPrimaryButtonEnabled = initial.Trim().Length > 0,
+        };
+        box.TextChanged += (_, _) =>
+            dialog.IsPrimaryButtonEnabled = box.Text.Trim().Length > 0;
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            return null;
+        var name = box.Text.Trim();
+        if (name.Length == 0 || name.IndexOfAny(new[] { '\\', '/', ':', '*', '?', '"', '<', '>', '|' }) >= 0)
+        {
+            ShowError("预设名称不能为空，也不能包含 \\ / : * ? \" < > |", InfoBarSeverity.Warning);
+            return null;
+        }
+        return name;
+    }
+
+    private async Task<bool> ConfirmAsync(string title, string message, string primary)
+    {
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = title,
+            Content = message,
+            PrimaryButtonText = primary,
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Close,
+        };
+        return await dialog.ShowAsync() == ContentDialogResult.Primary;
     }
 
     private async void PresetSave_Click(object sender, RoutedEventArgs e)
     {
         if (!_connected) return;
-        var name = PresetNameBox.Text.Trim();
-        if (name.Length == 0) name = (PresetList.SelectedItem as PresetItem)?.Name ?? "";
-        if (name.Length == 0)
+        var name = CurrentPresetName();
+        if (name is null)
         {
-            ShowError("请填写预设名称", InfoBarSeverity.Warning);
+            ShowError("请先选择一套预设；新预设请用「另存为」", InfoBarSeverity.Warning);
             return;
         }
+        if (!await ConfirmAsync("覆盖预设", $"用当前的全部设置覆盖「{name}」？", "覆盖"))
+            return;
+
         SetBusy(true, "正在保存预设…");
         try
         {
             await _client.CallAsync("preset_save", new JsonObject { ["name"] = name }, 30000);
-            PresetNameBox.Text = "";
             await RefreshPresets(name);
-            ShowError($"预设“{name}”已保存", InfoBarSeverity.Success);
+            ShowError($"预设「{name}」已更新", InfoBarSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
+    private async void PresetSaveAs_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_connected) return;
+        var initial = CurrentPresetName();
+        initial = initial is { Length: > 0 } ? $"{initial} 副本" : $"预设 {_presets.Count + 1}";
+        var name = await PromptPresetNameAsync("另存为新预设", initial);
+        if (name is null) return;
+
+        SetBusy(true, "正在保存预设…");
+        try
+        {
+            await _client.CallAsync("preset_save", new JsonObject { ["name"] = name }, 30000);
+            await RefreshPresets(name);
+            ShowError($"预设「{name}」已保存", InfoBarSeverity.Success);
         }
         catch (Exception ex)
         {
@@ -1674,10 +2259,10 @@ public sealed partial class MainWindow : Window
     private async void PresetLoad_Click(object sender, RoutedEventArgs e)
     {
         if (!_connected) return;
-        var name = (PresetList.SelectedItem as PresetItem)?.Name ?? PresetNameBox.Text.Trim();
-        if (name.Length == 0)
+        var name = CurrentPresetName();
+        if (name is null)
         {
-            ShowError("请选择或填写要载入的预设", InfoBarSeverity.Warning);
+            ShowError("请先选择要载入的预设", InfoBarSeverity.Warning);
             return;
         }
         SetBusy(true, "正在载入预设…");
@@ -1688,7 +2273,7 @@ public sealed partial class MainWindow : Window
             if (result.TryGetProperty("settings", out var settings))
                 ApplySettings(settings);
             await RefreshPresets(name);
-            ShowError($"预设“{name}”已载入", InfoBarSeverity.Success);
+            ShowError($"预设「{name}」已载入", InfoBarSeverity.Success);
         }
         catch (Exception ex)
         {
@@ -1703,16 +2288,19 @@ public sealed partial class MainWindow : Window
     private async void PresetDelete_Click(object sender, RoutedEventArgs e)
     {
         if (!_connected) return;
-        var name = (PresetList.SelectedItem as PresetItem)?.Name ?? PresetNameBox.Text.Trim();
-        if (name.Length == 0)
+        var name = CurrentPresetName();
+        if (name is null)
         {
-            ShowError("请选择要删除的预设", InfoBarSeverity.Warning);
+            ShowError("请先选择要删除的预设", InfoBarSeverity.Warning);
             return;
         }
+        if (!await ConfirmAsync("删除预设", $"删除「{name}」后无法恢复，确定继续？", "删除"))
+            return;
         try
         {
             await _client.CallAsync("preset_delete", new JsonObject { ["name"] = name }, 10000);
             await RefreshPresets();
+            ShowError($"预设「{name}」已删除", InfoBarSeverity.Success);
         }
         catch (Exception ex)
         {

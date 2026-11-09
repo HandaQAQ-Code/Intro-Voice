@@ -103,10 +103,11 @@ runtime\python.exe tests\test_vst3_real.py
 
 | 能力 | 实现 | 验证状态 |
 | --- | --- | --- |
-| 远程目录拉取 | `market_service.fetch_catalog`，8 s 超时、10 分钟内存缓存、失败回退随包 `plugin-registry/catalog.json` | 远程 URL 已随仓库发布（GitHub API 确认 1.3 KB）；构建环境访问 raw.githubusercontent 被 TLS 拦截，实际走的是随包兜底 |
+| 远程目录拉取 | `market_service.fetch_catalog`，8 s 超时、10 分钟缓存、失败回退随包 `plugin-market/catalog.json` | 目录已迁到 `Intro-Voice-Plugin-Market`；GitHub API 确认 5 条目（1 工坊 + 1 zip + 3 link）。构建环境访问 raw.githubusercontent 被 TLS 拦截，实际走随包兜底 |
 | 一键安装 | 下载 → SHA-256 校验 → 路径穿越防护解压 → `%LOCALAPPDATA%\Programs\Common\VST3\<slug>` | **通过**：本地 HTTP 目录 + 真实 zip 包，安装后目录存在、已安装列表出现；错误哈希被拒绝 |
 | 卸载 | 删除安装目录并更新 `market_installed.json` | **通过**：卸载后目录消失、列表清空 |
-| 目录内容 | 1 条 `zip`（Surge XT Effects，GPL-3.0，官方 Nightly 资产，标注版权与源码地址）+ 3 条 `link`（LoudMax / TDR Nova / Voxengo SPAN） | zip 条目可一键安装；link 条目只打开官网 |
+| 目录内容 | 1 条 `workshop`（空气感）+ 1 条 `zip`（Surge XT Effects，GPL-3.0，官方 Nightly 资产，标注版权与源码地址）+ 3 条 `link`（LoudMax / TDR Nova / Voxengo SPAN） | 工坊与 zip 条目可一键安装；link 条目只打开官网 |
+| 工坊安装/卸载 | 拉取 `manifest` → 校验 slug → 保存到 `data/mixer/workshop/<slug>`；卸载删除目录并清清单 | **通过**：本地 HTTP 目录跑通安装→清单→卸载；已安装的本地插件也能从市场卸载 |
 | 更新检查 | GitHub Releases API + SemVer 比较 | 仓库尚无 Release，返回「仓库还没有发布版本」；新建的 Release 才能验证升级 |
 | 下载与校验 | 下载到 `data/mixer/update`，校验 SHA-256 后写 `package.sha256` | 未验证（没有可用 Release 资产；构建环境 GitHub 资产 CDN 被拦截） |
 | 安装更新 | 生成 `apply_update.bat`：等主程序退出 → 备份 `RecordOutMixer.bak` → 解压覆盖 → 失败回滚 → 重启 | 脚本已生成，**未做真实升级演练** |
@@ -114,9 +115,25 @@ runtime\python.exe tests\test_vst3_real.py
 因此「插件市场」的安装/卸载与真实下载均已验证；GPL 插件按许可证要求标注了版权与源码地址。
 「自动更新」的检查与下载逻辑完成，**端到端升级未验证**，不能对外声称可用。
 
+## 八、创意工坊（Python 效果器）
+
+| 能力 | 实现 | 验证状态 |
+| --- | --- | --- |
+| 脚本格式 | `plugin.json`（元数据 + `code`），脚本内 `PARAMS` 声明参数、`process(x, sr, params)` 处理音频 | **通过**：保存、重新加载、参数解析 |
+| 编译与执行 | 控制线程 `exec` 编译，音频线程非阻塞取快照；`import` / `open` / `eval` 等被拒绝 | **通过**：缺 `process`、`import` 均被明确拒绝 |
+| 异常隔离 | 形状不符 / NaN 只旁通该插件并计数 | **通过**：输出与输入逐样本一致，`errors=1` |
+| 引擎接入 | 内置效果之后、VST3 之前，`MixerEngine._process_block` 内执行 | **通过**：×2 测试插件实测放大 2.000 倍 |
+| 离线试听 | 1 秒 440 Hz + 噪声，20 块，输出 RMS / 峰值 / 每块耗时 | **通过**：示例插件 +0.43 dB，0.011 ms/块 |
+| 发布到市场 | 克隆自托管仓库 → 写 `plugins/<slug>` → 重建 `catalog.json` → commit/push → 同步随包目录 | **通过**：真实推送到 `Intro-Voice-Plugin-Market`（commit `1b48423`） |
+
+回归：`tests\test_workshop.py`，19 项全部通过。
+
+已知限制：Python 脚本不是完整沙箱，安装他人插件前需确认来源；脚本按块执行，无法使用需要跨块状态之外的宿主服务。
+
 ## 八、下一步（按路线图顺序）
 
 1. 补 P0 许可证表，清除个人声纹与未授权权重后再谈公开分发。
 2. P5：签名 Release + stable/beta 更新检查（哈希与签名双验证），先做「检查并打开 Release 页」的降级模式。
 3. P6：插件目录仅做元数据索引；虚拟驱动单独立项，先做可行性原型与签名路径确认。
 4. 工程侧：评估把 `mixer_dsp.py` 迁移为 C++ 处理器（保持现有接口与测试作为回归基线）。
+5. 创意工坊：增加跨块状态 API、A/B 对比与波形预览；发布前做静态检查与签名（目前仅拒绝危险关键字）。

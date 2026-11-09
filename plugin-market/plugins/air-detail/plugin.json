@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "slug": "air-detail",
+  "name": "空气感",
+  "author": "Intro Voice",
+  "version": "1.0.0",
+  "license": "MIT",
+  "description": "抬起 6 kHz 以上的空气感，附输出补偿；适合人声与木吉他。",
+  "code": "PARAMS = [\n    {\"id\": \"amount\", \"name\": \"空气感\", \"min\": 0.0, \"max\": 1.0, \"default\": 0.35, \"step\": 0.01},\n    {\"id\": \"trim\", \"name\": \"输出\", \"min\": -12.0, \"max\": 6.0, \"default\": 0.0, \"step\": 0.5, \"unit\": \"dB\"},\n]\n\ndef process(x, sr, params):\n    # 一阶差分近似高频搁架：抬起 6 kHz 以上，再按 trim 收电平\n    high = np.diff(x, axis=0, prepend=x[:1])\n    y = x + high * (params[\"amount\"] * 2.0)\n    y = y * db_to_gain(params[\"trim\"])\n    return np.clip(y, -1.5, 1.5).astype(np.float32)\n",
+  "updatedAt": "2026-11-09 13:38:54"
+}

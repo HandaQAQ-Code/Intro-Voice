@@ -85,6 +85,11 @@
                         <FontIcon Glyph="&#xE9E9;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <NavigationViewItem Content="创意工坊" Tag="workshop">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE70F;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem Tag="plugins">
                     <NavigationViewItem.Content>
                         <StackPanel Orientation="Horizontal" Spacing="8">
@@ -391,9 +396,63 @@
             </Grid>
 
             <!-- 内置效果 -->
-            <Grid x:Name="PageFx" Visibility="Collapsed">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel Padding="18,14,18,18" Spacing="12">
+            <Grid x:Name="PageFx" Visibility="Collapsed" Padding="18,14,18,14" RowSpacing="12">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <!-- 预设栏：常驻页面顶部，调参与存档在同一屏 -->
+                <Border Style="{StaticResource CardStyle}" Padding="14,10">
+                    <Grid RowSpacing="6">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="228" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                <FontIcon Glyph="&#xE74E;" FontSize="15"
+                                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                <TextBlock Text="预设" Style="{StaticResource SectionTitle}" />
+                                <Border Style="{StaticResource PillBorder}" Padding="8,1" VerticalAlignment="Center">
+                                    <TextBlock x:Name="PresetCountText" Text="0 套" FontSize="11" />
+                                </Border>
+                            </StackPanel>
+
+                            <ComboBox x:Name="PresetCombo" Grid.Column="1" HorizontalAlignment="Stretch"
+                                      PlaceholderText="（还没有预设）"
+                                      SelectionChanged="PresetCombo_SelectionChanged" />
+
+                            <TextBlock x:Name="PresetDetailText" Grid.Column="2" Style="{StaticResource HintText}"
+                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                       Text="保存当前的全部设置后，可在这里一键切换场景。" />
+
+                            <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="6"
+                                        VerticalAlignment="Center">
+                                <Button x:Name="PresetLoadButton" Content="载入" Click="PresetLoad_Click"
+                                        Style="{StaticResource AccentButtonStyle}" IsEnabled="False" />
+                                <Button x:Name="PresetSaveButton" Content="覆盖保存" Click="PresetSave_Click"
+                                        IsEnabled="False" />
+                                <Button Content="另存为" Click="PresetSaveAs_Click" />
+                                <Button x:Name="PresetDeleteButton" Content="删除" Click="PresetDelete_Click"
+                                        IsEnabled="False" />
+                            </StackPanel>
+                        </Grid>
+
+                        <TextBlock Grid.Row="1" Style="{StaticResource HintText}"
+                                   Text="预设包含插件链顺序与参数、AI 档位与降噪、内置效果器参数、创意工坊插件；载入前请先停止处理。" />
+                    </Grid>
+                </Border>
+
+                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                    <StackPanel Spacing="12" Padding="0,0,4,0">
                         <Border Style="{StaticResource CardStyle}">
                             <Grid ColumnSpacing="16">
                                 <Grid.ColumnDefinitions>
@@ -710,65 +769,240 @@
                                 </Border>
                             </StackPanel>
                         </Grid>
-                        <Border Style="{StaticResource CardStyle}">
-                            <Grid ColumnSpacing="16">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="380" />
-                                </Grid.ColumnDefinitions>
-
-                                <StackPanel Spacing="8">
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Text="效果预设" Style="{StaticResource SectionTitle}" />
-                                        <TextBlock x:Name="PresetCountText" Grid.Column="1" Text="0 套"
-                                                   Style="{StaticResource HintText}" VerticalAlignment="Center" />
-                                    </Grid>
-                                    <Grid>
-                                        <ListView x:Name="PresetList" Height="190" SelectionMode="Single"
-                                                  SelectionChanged="PresetList_SelectionChanged">
-                                            <ListView.ItemTemplate>
-                                                <DataTemplate x:DataType="local:PresetItem">
-                                                    <StackPanel Padding="0,5">
-                                                        <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold"
-                                                                   TextTrimming="CharacterEllipsis" />
-                                                        <TextBlock Text="{x:Bind Subtitle}" FontSize="12"
-                                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                                    </StackPanel>
-                                                </DataTemplate>
-                                            </ListView.ItemTemplate>
-                                        </ListView>
-                                        <StackPanel x:Name="PresetEmpty" VerticalAlignment="Center" Spacing="6"
-                                                    HorizontalAlignment="Center" MaxWidth="300">
-                                            <Image Source="ms-appx:///Assets/empty-presets.png"
-                                                   Width="72" Height="72" Stretch="Uniform" />
-                                            <TextBlock Text="还没有保存过预设" HorizontalAlignment="Center" FontWeight="SemiBold" />
-                                            <TextBlock Text="调好上面的参数后，在右侧起个名字保存。"
-                                                       Style="{StaticResource HintText}" TextAlignment="Center" />
-                                        </StackPanel>
-                                    </Grid>
-                                </StackPanel>
-
-                                <StackPanel Grid.Column="1" Spacing="8">
-                                    <TextBlock Style="{StaticResource HintText}"
-                                               Text="预设保存的是「插件链 + AI 档位 + 全部效果参数」，载入前请先停止处理。" />
-                                    <TextBox x:Name="PresetNameBox" PlaceholderText="预设名称（例如：直播·暖声）" />
-                                    <StackPanel Orientation="Horizontal" Spacing="6">
-                                        <Button Content="保存当前" Click="PresetSave_Click"
-                                                Style="{StaticResource AccentButtonStyle}" />
-                                        <Button Content="载入" Click="PresetLoad_Click" />
-                                        <Button Content="删除" Click="PresetDelete_Click" />
-                                    </StackPanel>
-                                    <TextBlock Style="{StaticResource HintText}"
-                                               Text="建议：直播 / 录音 / 连麦各存一套，切换场景时不用重新调。" />
-                                </StackPanel>
-                            </Grid>
-                        </Border>
                     </StackPanel>
                 </ScrollViewer>
+            </Grid>
+
+            <!-- 创意工坊 -->
+            <Grid x:Name="PageWorkshop" Visibility="Collapsed" Padding="18,14,18,14" RowSpacing="12">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Border Style="{StaticResource CardStyle}" Padding="14,10">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="3">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <FontIcon Glyph="&#xE70F;" FontSize="15"
+                                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                <TextBlock Text="创意工坊" Style="{StaticResource SectionTitle}" />
+                                <Border Style="{StaticResource PillBorder}" Padding="8,1" VerticalAlignment="Center">
+                                    <TextBlock Text="Python DSP" FontSize="11" />
+                                </Border>
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Text="写一个 process(x, sr, params)：x 是 (块长度, 2) 的 float32，返回同形状数组；保存后立即进入效果链。" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                            <ComboBox x:Name="WorkshopTemplateCombo" Width="132" PlaceholderText="从模板开始"
+                                      SelectionChanged="WorkshopTemplate_Changed" />
+                            <Button Content="新建" Click="WorkshopNew_Click" />
+                            <Button Content="保存并启用" Click="WorkshopSave_Click"
+                                    Style="{StaticResource AccentButtonStyle}" />
+                            <Button Content="测试" Click="WorkshopTest_Click" />
+                            <ToggleSwitch x:Name="WsEnableSwitch" OnContent="启用" OffContent="停用"
+                                          IsOn="False" MinWidth="0" Toggled="WsEnable_Toggled" />
+                            <Button x:Name="WorkshopPublishButton" Content="发布到市场" Click="WorkshopPublish_Click"
+                                    IsEnabled="False" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <Grid Grid.Row="1" ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="272" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Style="{StaticResource CardStyle}">
+                        <Grid RowSpacing="10">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="我的插件" Style="{StaticResource SectionTitle}" />
+                                <TextBlock x:Name="WorkshopCountText" Grid.Column="1" Text="0 个"
+                                           Style="{StaticResource HintText}" VerticalAlignment="Center" />
+                            </Grid>
+
+                            <Grid Grid.Row="1">
+                                <ListView x:Name="WorkshopList" SelectionMode="Single"
+                                          SelectionChanged="WorkshopList_SelectionChanged">
+                                    <ListView.ItemTemplate>
+                                        <DataTemplate x:DataType="local:WorkshopItem">
+                                            <Grid Padding="0,5" ColumnSpacing="8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Spacing="2">
+                                                    <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Text="{x:Bind Subtitle}" FontSize="12"
+                                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                </StackPanel>
+                                                <FontIcon Grid.Column="1" Glyph="&#xE73E;" FontSize="12"
+                                                          VerticalAlignment="Center"
+                                                          Visibility="{x:Bind Enabled}"
+                                                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListView.ItemTemplate>
+                                </ListView>
+                                <StackPanel x:Name="WorkshopEmpty" VerticalAlignment="Center" Spacing="6"
+                                            HorizontalAlignment="Center" MaxWidth="230">
+                                    <Image Source="ms-appx:///Assets/empty-plugins.png"
+                                           Width="72" Height="72" Stretch="Uniform" />
+                                    <TextBlock Text="还没有自己的插件" HorizontalAlignment="Center" FontWeight="SemiBold" />
+                                    <TextBlock Text="从右上角模板开始写，或到插件市场安装别人发布的作品。"
+                                               Style="{StaticResource HintText}" TextAlignment="Center" />
+                                </StackPanel>
+                            </Grid>
+
+                            <StackPanel Grid.Row="2" Spacing="8">
+                                <Border Style="{StaticResource InnerCardStyle}" Padding="10,8">
+                                    <StackPanel Spacing="3">
+                                        <TextBlock Text="API 速查" FontWeight="SemiBold" FontSize="12" />
+                                        <TextBlock Style="{StaticResource HintText}"
+                                                   Text="x：(块, 2) float32" />
+                                        <TextBlock Style="{StaticResource HintText}"
+                                                   Text="sr：采样率 48000" />
+                                        <TextBlock Style="{StaticResource HintText}"
+                                                   Text="params：归一化后的参数字典" />
+                                        <TextBlock Style="{StaticResource HintText}"
+                                                   Text="可用 np / db_to_gain / soft_clip" />
+                                        <TextBlock Style="{StaticResource HintText}"
+                                                   Text="禁止 import、文件与网络访问" />
+                                    </StackPanel>
+                                </Border>
+                                <Button Content="删除选中" Click="WorkshopDelete_Click"
+                                        HorizontalAlignment="Stretch" />
+                                <TextBlock x:Name="WorkshopPathText" Style="{StaticResource HintText}"
+                                           TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <Grid Grid.Column="1" RowSpacing="10">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <Border Style="{StaticResource CardStyle}" Padding="14,10">
+                            <Grid ColumnSpacing="10" RowSpacing="6">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="2">
+                                    <TextBlock Text="名称" Style="{StaticResource MetricLabel}" />
+                                    <TextBox x:Name="WsNameBox" PlaceholderText="例如：空气感" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Spacing="2">
+                                    <TextBlock Text="标识（英文小写）" Style="{StaticResource MetricLabel}" />
+                                    <TextBox x:Name="WsSlugBox" PlaceholderText="air-detail" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2" Spacing="2">
+                                    <TextBlock Text="作者" Style="{StaticResource MetricLabel}" />
+                                    <TextBox x:Name="WsAuthorBox" PlaceholderText="你的名字" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="3" Spacing="2">
+                                    <TextBlock Text="版本 / 许可" Style="{StaticResource MetricLabel}" />
+                                    <Grid ColumnSpacing="6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="WsVersionBox" Text="1.0.0" />
+                                        <ComboBox x:Name="WsLicenseCombo" Grid.Column="1"
+                                                  HorizontalAlignment="Stretch" />
+                                    </Grid>
+                                </StackPanel>
+                                <TextBox x:Name="WsDescBox" Grid.Row="1" Grid.ColumnSpan="4"
+                                         PlaceholderText="一句话说明它做什么、适合什么素材；会显示在插件市场里。" />
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="12">
+                            <Grid RowSpacing="6">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="效果代码" Style="{StaticResource SectionTitle}" />
+                                    <TextBlock x:Name="WsCodeStatus" Grid.Column="1" Style="{StaticResource HintText}"
+                                               VerticalAlignment="Center" Text="未保存" />
+                                </Grid>
+                                <TextBox x:Name="WsCodeBox" Grid.Row="1"
+                                         FontFamily="{StaticResource CodeFontFamily}" FontSize="13"
+                                         Padding="10,16" VerticalContentAlignment="Top"
+                                         AcceptsReturn="True" TextWrapping="NoWrap" IsSpellCheckEnabled="False"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                         TextChanged="WsCode_TextChanged"
+                                         PlaceholderText="def process(x, sr, params):&#x0a;    return x" />
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Row="2" Style="{StaticResource CardStyle}" Padding="12,10">
+                            <Grid RowSpacing="4">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="参数（脚本里的 PARAMS）" Style="{StaticResource SectionTitle}" />
+                                <ItemsControl x:Name="WorkshopParamList" Grid.Row="1">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="local:WorkshopParam">
+                                            <Grid ColumnSpacing="10" Padding="0,1">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="96" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="76" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{x:Bind Name}" Style="{StaticResource MetricLabel}" />
+                                                <Slider Grid.Column="1" Minimum="{x:Bind Min}" Maximum="{x:Bind Max}"
+                                                        StepFrequency="{x:Bind Step}"
+                                                        Value="{x:Bind Value, Mode=OneWay}"
+                                                        ValueChanged="WorkshopParam_Changed" />
+                                                <TextBlock Grid.Column="2" Text="{x:Bind Display, Mode=OneWay}"
+                                                           Style="{StaticResource ValueText}" TextAlignment="Right" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Grid.Row="2" x:Name="WorkshopTestText" Style="{StaticResource HintText}"
+                                           Text="点「测试」用 1 秒合成信号离线跑一遍，检查输出电平、峰值与每块耗时。" />
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </Grid>
             </Grid>
 
             <!-- VST3 插件 -->
