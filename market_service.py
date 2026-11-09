@@ -276,6 +276,8 @@ def check_update(root: Path, use_proxy: str | None = None) -> dict:
         raw, _ = _get(RELEASES_API, timeout=8.0, accept="application/vnd.github+json")
         payload = json.loads(raw.decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return {"ok": False, "error": "仓库还没有发布版本（Releases 为空）"}
         return {"ok": False, "error": f"更新服务返回 {exc.code}（可能触发限频）"}
     except Exception as exc:
         return {"ok": False, "error": f"检查更新失败：{exc}"}

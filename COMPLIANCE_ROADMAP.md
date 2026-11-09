@@ -98,7 +98,23 @@ runtime\python.exe tests\test_vst3_real.py
 
 便携版启动：双击 `启动调音台.bat`。日志：`data\mixer\service.log`、`data\mixer\ui.log`。
 
-## 六、下一步（按路线图顺序）
+
+## 七、插件市场与自动更新（本轮新增）
+
+| 能力 | 实现 | 验证状态 |
+| --- | --- | --- |
+| 远程目录拉取 | `market_service.fetch_catalog`，8 s 超时、10 分钟内存缓存、失败回退随包 `plugin-registry/catalog.json` | 远程 URL 已随仓库发布（GitHub API 确认 1.3 KB）；构建环境访问 raw.githubusercontent 被 TLS 拦截，实际走的是随包兜底 |
+| 一键安装 | 下载 → SHA-256 校验 → 路径穿越防护解压 → `%LOCALAPPDATA%\Programs\Common\VST3\<slug>` | **通过**：本地 HTTP 目录 + 真实 zip 包，安装后目录存在、已安装列表出现；错误哈希被拒绝 |
+| 卸载 | 删除安装目录并更新 `market_installed.json` | **通过**：卸载后目录消失、列表清空 |
+| 目录内容 | 4 条 `link` 条目（LoudMax / TDR Nova / Voxengo SPAN / Surge XT） | 只给官方页面，不分发二进制（P0 未过） |
+| 更新检查 | GitHub Releases API + SemVer 比较 | 仓库尚无 Release，返回「仓库还没有发布版本」；新建的 Release 才能验证升级 |
+| 下载与校验 | 下载到 `data/mixer/update`，校验 SHA-256 后写 `package.sha256` | 未验证（没有可用 Release 资产；构建环境 GitHub 资产 CDN 被拦截） |
+| 安装更新 | 生成 `apply_update.bat`：等主程序退出 → 备份 `RecordOutMixer.bak` → 解压覆盖 → 失败回滚 → 重启 | 脚本已生成，**未做真实升级演练** |
+
+因此「插件市场」的**安装/卸载管线是真的**（有实测），但目录里的条目目前只有链接；
+「自动更新」的检查与下载逻辑完成，**端到端升级未验证**，不能对外声称可用。
+
+## 八、下一步（按路线图顺序）
 
 1. 补 P0 许可证表，清除个人声纹与未授权权重后再谈公开分发。
 2. P5：签名 Release + stable/beta 更新检查（哈希与签名双验证），先做「检查并打开 Release 页」的降级模式。
