@@ -74,6 +74,7 @@ public sealed partial class MainWindow : Window
     private bool _micSyncing;
     private string _micQrKey = "";
     private string _micSource = "device";
+    private string _micView = "virtual";
     private DateTime _micSourcePushedAt = DateTime.MinValue;
 
     public MainWindow()
@@ -193,6 +194,7 @@ public sealed partial class MainWindow : Window
         _micSettingTimer.Tick += FlushMicSettings;
 
         ApplyWorkshopMode();
+        SetMicView("virtual");
         SetMicSource("device", false);
         Nav.SizeChanged += (_, _) => UpdatePageHeights();
         Closed += OnClosed;
@@ -305,6 +307,9 @@ public sealed partial class MainWindow : Window
         SelectDevice(InputCombo, _inputs, _savedInputLabel, defaultInput);
         SelectDevice(OutputCombo, _outputs, _savedOutputLabel, cableLabel);
         UpdateRoutingText();
+        if (devices.TryGetProperty("virtual", out var virtualStatus))
+            ApplyVirtualStatus(virtualStatus);
+        UpdateMicDeviceName();
     }
 
     private static void SelectDevice(ComboBox combo, List<DeviceItem> items, string saved, string fallback)
@@ -795,6 +800,7 @@ public sealed partial class MainWindow : Window
             UpdateMicDeviceName();
             UpdateMicSourceHints();
             _ = RefreshMicStatusAsync(true);
+            _ = RefreshVirtualAsync();
         }
     }
 
@@ -1678,18 +1684,43 @@ def process(x, sr, params):
     }
 
     // ------------------------------------------------------------------
-    // 麦克风配置：来源切换（电脑声卡 / 手机麦克风）
+    // 麦克风配置：虚拟麦克风输出（主视图）+ 手机麦克风（派生输入）
     // ------------------------------------------------------------------
-    private void MicSourceToggle_Click(object sender, RoutedEventArgs e)
+    private void MicViewToggle_Click(object sender, RoutedEventArgs e)
     {
         if (_micSyncing) return;
-        SetMicSource(ReferenceEquals(sender, MicSrcMobileToggle) ? "mobile" : "device", true);
+        SetMicView(ReferenceEquals(sender, MicViewMobileToggle) ? "mobile" : "virtual");
+    }
+
+    private void SetMicView(string view)
+    {
+        _micView = string.Equals(view, "mobile", StringComparison.OrdinalIgnoreCase)
+            ? "mobile" : "virtual";
+        _micSyncing = true;
+        MicViewMobileToggle.IsChecked = _micView == "mobile";
+        MicViewVirtualToggle.IsChecked = _micView == "virtual";
+        _micSyncing = false;
+
+        bool mobile = _micView == "mobile";
+        MicMobileView.Visibility = mobile ? Visibility.Visible : Visibility.Collapsed;
+        MicVirtualView.Visibility = mobile ? Visibility.Collapsed : Visibility.Visible;
+        UpdateMicDeviceName();
+        if (mobile)
+            _ = RefreshMicStatusAsync(true);
+        else
+            _ = RefreshVirtualAsync();
     }
 
     private void MicGoLive_Click(object sender, RoutedEventArgs e) => GoToPage("live");
 
-    private void MicGoMobile_Click(object sender, RoutedEventArgs e)
-        => SetMicSource("mobile", true);
+    private void MicGoMobile_Click(object sender, RoutedEventArgs e) => SetMicView("mobile");
+
+    private void MicInputSource_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_micSyncing) return;
+        if (sender is not RadioButton radio || radio.IsChecked != true) return;
+        SetMicSource(ReferenceEquals(radio, MicInputMobileRadio) ? "mobile" : "device", true);
+    }
 
     private async void MicRefreshDevices_Click(object sender, RoutedEventArgs e)
     {
@@ -1710,20 +1741,94 @@ def process(x, sr, params):
         }
     }
 
-    /// <summary>切换输入来源并同步两套视图；push 为真时把选择写回服务端。</summary>
+    /// <summary>进页面时重新检测虚拟端点，不修改系统设备。</summary>
+    private async Task RefreshVirtualAsync()
+    {
+        if (!_connected) return;
+        try
+        {
+            ApplyDevices(await _client.CallAsync("devices"));
+        }
+        catch
+        {
+            // 服务忙时下一次刷新或进入页面会补上。
+        }
+    }
+
+    /// <summary>渲染虚拟设备检测结果：只展示状态，不安装、不分发驱动。</summary>
+    private void ApplyVirtualStatus(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.Object) return;
+        bool installed = value.TryGetProperty("installed", out var flag)
+                         && flag.ValueKind == JsonValueKind.True;
+        VirtStateText.Text = installed ? "已就绪" : "未检测到";
+        VirtStateDot.Background = new SolidColorBrush(installed
+            ? Microsoft.UI.Colors.ForestGreen : Microsoft.UI.Colors.Gray);
+        VirtHintText.Text = Str(value, "hint");
+
+        if (value.TryGetProperty("render", out var render)
+            && render.ValueKind == JsonValueKind.Object)
+            VirtRenderText.Text = Str(render, "label");
+        else
+            VirtRenderText.Text = "—（未检测到 CABLE Input）";
+        if (value.TryGetProperty("capture", out var capture)
+            && capture.ValueKind == JsonValueKind.Object)
+            VirtCaptureText.Text = Str(capture, "label");
+        else
+            VirtCaptureText.Text = "—（未检测到 CABLE Output）";
+
+        string note = Str(value, "driverNote");
+        if (value.TryGetProperty("pack", out var pack)
+            && pack.ValueKind == JsonValueKind.Object
+            && pack.TryGetProperty("present", out var present)
+            && present.ValueKind == JsonValueKind.True)
+        {
+            string dir = Str(pack, "dir");
+            if (dir.Length > 0) note += "\n本机已有官方解压包：" + dir;
+        }
+        VirtDriverNote.Text = note;
+        VirtInstallerButton.IsEnabled = true;
+    }
+
+    private async void VirtInstaller_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_connected) return;
+        try
+        {
+            var result = await _client.CallAsync("virtual_open_installer", new JsonObject(), 10000);
+            string hint = Str(result, "hint");
+            if (hint.Length > 0) VirtHintText.Text = hint;
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+        }
+    }
+
+    private async void VirtDownload_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_connected) return;
+        try
+        {
+            var result = await _client.CallAsync("virtual_open_download", new JsonObject(), 10000);
+            string hint = Str(result, "hint");
+            if (hint.Length > 0) VirtHintText.Text = hint;
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+        }
+    }
+
+    /// <summary>同步输入来源（声卡 / 手机）；push 为真时写回服务端。</summary>
     private void SetMicSource(string source, bool push)
     {
         _micSource = string.Equals(source, "mobile", StringComparison.OrdinalIgnoreCase)
             ? "mobile" : "device";
         _micSyncing = true;
-        MicSrcMobileToggle.IsChecked = _micSource == "mobile";
-        MicSrcDeviceToggle.IsChecked = _micSource == "device";
+        MicInputMobileRadio.IsChecked = _micSource == "mobile";
+        MicInputDeviceRadio.IsChecked = _micSource == "device";
         _micSyncing = false;
-
-        bool mobile = _micSource == "mobile";
-        MicMobileView.Visibility = mobile ? Visibility.Visible : Visibility.Collapsed;
-        MicDeviceView.Visibility = mobile ? Visibility.Collapsed : Visibility.Visible;
-        UpdateMicDeviceName();
         UpdateMicSourceHints();
         if (push) _ = PushMicSourceAsync(_micSource);
     }
@@ -1756,10 +1861,10 @@ def process(x, sr, params):
     private void UpdateMicSourceHints()
     {
         MicDeviceRunText.Text = _micSource == "mobile"
-            ? "当前设置走手机麦克风；切回电脑声卡后会沿用主控页选好的设备。"
+            ? "当前输入来自手机麦克风；配对与电平在「手机麦克风」视图。"
             : _micRunning
-                ? "链路正在运行，输入来自电脑声卡。改过设备后回主控页重新开始即可。"
-                : "链路未运行：到主控页选好设备并点开始，这里才有的可看。";
+                ? "链路正在运行，输入来自电脑声卡；输出会自动选中虚拟麦克风。"
+                : "链路未运行：到主控页点开始，声音才会写进虚拟麦克风。";
     }
 
     /// <summary>按导航项定位页面，同时更新侧边栏选中态。</summary>

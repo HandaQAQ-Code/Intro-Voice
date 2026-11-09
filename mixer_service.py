@@ -28,6 +28,7 @@ from mixer_dsp import DspChain, default_params as dsp_default_params, merge_para
 import market_service
 import workshop_service
 import mobile_mic
+import virtual_device
 
 ROOT = Path(__file__).resolve().parent
 MIXER_DATA = ROOT / "data" / "mixer"
@@ -1107,8 +1108,9 @@ class Service:
 
     def _devices(self) -> dict:
         hosts = sd.query_hostapis()
+        raw_devices = list(sd.query_devices())
         inputs, outputs = [], []
-        for index, info in enumerate(sd.query_devices()):
+        for index, info in enumerate(raw_devices):
             host = hosts[info["hostapi"]]["name"]
             if host == "Windows WDM-KS":
                 continue
@@ -1149,7 +1151,8 @@ class Service:
         if not cable:
             cable = next((o["label"] for o in outputs if o["host"] == "Windows WASAPI"), "")
         return {"inputs": inputs, "outputs": outputs, "cableOutput": cable,
-                "inputDefault": default_input}
+                "inputDefault": default_input,
+                "virtual": virtual_device.detect(devices=raw_devices, hosts=hosts)}
 
     def _drain_events(self) -> None:
         while True:
@@ -1241,6 +1244,15 @@ class Service:
 
     def cmd_devices(self, request):
         return self._devices()
+
+    def cmd_virtual_status(self, request):
+        return virtual_device.status()
+
+    def cmd_virtual_open_installer(self, request):
+        return virtual_device.open_installer()
+
+    def cmd_virtual_open_download(self, request):
+        return virtual_device.open_download()
 
     def cmd_status(self, request):
         return self._status()

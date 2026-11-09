@@ -1202,31 +1202,31 @@
                                           Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
                                 <TextBlock Text="麦克风配置" Style="{StaticResource SectionTitle}" />
                                 <Border Style="{StaticResource PillBorder}" Padding="8,1" VerticalAlignment="Center">
-                                    <TextBlock Text="输入源" FontSize="11" />
+                                    <TextBlock Text="输出 + 输入来源" FontSize="11" />
                                 </Border>
                             </StackPanel>
                             <TextBlock Style="{StaticResource HintText}"
-                                       Text="先决定声音从哪进来，再看这一路的电平与处理。电脑声卡即插即用；手机麦克风是它的无线扩展，走局域网直连。" />
+                                       Text="处理后的声音交给虚拟麦克风，OBS / 会议软件从它采集；输入可以来自电脑声卡，也可以来自手机。" />
                         </StackPanel>
                         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                            <ToggleButton x:Name="MicSrcDeviceToggle" Click="MicSourceToggle_Click"
-                                          MinWidth="158" Padding="12,8" HorizontalContentAlignment="Left">
-                                <StackPanel Spacing="1">
-                                    <StackPanel Orientation="Horizontal" Spacing="6">
-                                        <FontIcon Glyph="&#xE7F5;" FontSize="13" />
-                                        <TextBlock Text="电脑声卡" FontWeight="SemiBold" />
-                                    </StackPanel>
-                                    <TextBlock Text="USB / XLR 麦克风" FontSize="11" Opacity="0.72" />
-                                </StackPanel>
-                            </ToggleButton>
-                            <ToggleButton x:Name="MicSrcMobileToggle" Click="MicSourceToggle_Click"
-                                          MinWidth="158" Padding="12,8" HorizontalContentAlignment="Left">
+                            <ToggleButton x:Name="MicViewVirtualToggle" Click="MicViewToggle_Click"
+                                          MinWidth="168" Padding="12,8" HorizontalContentAlignment="Left">
                                 <StackPanel Spacing="1">
                                     <StackPanel Orientation="Horizontal" Spacing="6">
                                         <FontIcon Glyph="&#xE8B8;" FontSize="13" />
+                                        <TextBlock Text="虚拟麦克风输出" FontWeight="SemiBold" />
+                                    </StackPanel>
+                                    <TextBlock Text="送给 OBS 与会议软件" FontSize="11" Opacity="0.72" />
+                                </StackPanel>
+                            </ToggleButton>
+                            <ToggleButton x:Name="MicViewMobileToggle" Click="MicViewToggle_Click"
+                                          MinWidth="158" Padding="12,8" HorizontalContentAlignment="Left">
+                                <StackPanel Spacing="1">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xE8EA;" FontSize="13" />
                                         <TextBlock Text="手机麦克风" FontWeight="SemiBold" />
                                     </StackPanel>
-                                    <TextBlock Text="Wi-Fi 无线接入" FontSize="11" Opacity="0.72" />
+                                    <TextBlock Text="Wi-Fi 无线输入" FontSize="11" Opacity="0.72" />
                                 </StackPanel>
                             </ToggleButton>
                         </StackPanel>
@@ -1235,7 +1235,7 @@
 
                 <Grid Grid.Row="1">
                     <!-- ========== A. 手机麦克风（无线扩展） ========== -->
-                    <Grid x:Name="MicMobileView" ColumnSpacing="14">
+                    <Grid x:Name="MicMobileView" ColumnSpacing="14" Visibility="Collapsed">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="356" />
                             <ColumnDefinition Width="*" />
@@ -1425,72 +1425,92 @@
                         </ScrollViewer>
                     </Grid>
 
-                    <!-- ========== B. 电脑声卡（默认来源） ========== -->
-                    <Grid x:Name="MicDeviceView" ColumnSpacing="14" Visibility="Collapsed">
+                    <!-- ========== B. 虚拟麦克风输出（默认视图） ========== -->
+                    <Grid x:Name="MicVirtualView" ColumnSpacing="14">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="356" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
 
-                        <StackPanel Spacing="12">
-                            <Border Style="{StaticResource CardStyle}">
-                                <StackPanel Spacing="8">
-                                    <TextBlock Text="当前输入设备" Style="{StaticResource SectionTitle}" />
-                                    <TextBlock x:Name="MicDeviceNameText" Text="未选择"
-                                               Style="{StaticResource ValueText}" TextWrapping="Wrap" />
-                                    <TextBlock Style="{StaticResource HintText}"
-                                               Text="设备列表在这里只做展示，选择与刷新在主控页，避免两处状态打架。" />
-                                    <StackPanel Orientation="Horizontal" Spacing="8">
-                                        <Button Content="去主控页选择设备" Click="MicGoLive_Click"
-                                                Style="{StaticResource AccentButtonStyle}" />
-                                        <Button Content="刷新设备列表" Click="MicRefreshDevices_Click" />
-                                    </StackPanel>
-                                </StackPanel>
-                            </Border>
-
-                            <Border Style="{StaticResource CardStyle}">
-                                <StackPanel Spacing="6">
-                                    <TextBlock Text="声卡这一路的调节" Style="{StaticResource SectionTitle}" />
-                                    <TextBlock Style="{StaticResource HintText}"
-                                               Text="输入增益、降噪门限、超分强度与延迟模式，都在主控页「AI 人声处理」里；内置效果与 VST3 在各自页面。" />
-                                    <TextBlock x:Name="MicDeviceRunText" Style="{StaticResource HintText}"
-                                               Text="链路未运行。" />
-                                </StackPanel>
-                            </Border>
-
-                            <Border Style="{StaticResource CardStyle}">
-                                <StackPanel Spacing="6">
-                                    <TextBlock Text="挑设备的三条经验" Style="{StaticResource SectionTitle}" />
-                                    <TextBlock Style="{StaticResource HintText}"
-                                               Text="· 优先选带 USB / Microphone 的条目，别选「立体声混音」，会重复录到系统声。" />
-                                    <TextBlock Style="{StaticResource HintText}"
-                                               Text="· 动圈麦常要 +10 dB 以上增益；电容麦一般 0 dB 就够。" />
-                                    <TextBlock Style="{StaticResource HintText}"
-                                               Text="· 换设备后回主控页重新开始，采样率会重新协商。" />
-                                </StackPanel>
-                            </Border>
-                        </StackPanel>
-
-                        <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <StackPanel Spacing="12">
                                 <Border Style="{StaticResource CardStyle}">
-                                    <StackPanel Spacing="8">
-                                        <TextBlock Text="当前输入电平" Style="{StaticResource SectionTitle}" />
-                                        <TextBlock x:Name="MicCfgLevelText" Text="—" Style="{StaticResource ValueText}" />
-                                        <ProgressBar x:Name="MicCfgLevelBar" Height="6" Maximum="100" Value="0" />
-                                        <TextBlock Style="{StaticResource HintText}"
-                                                   Text="目标 -12 ~ -6 dB：太低就加输入增益，经常冲到 0 就减一点。" />
+                                    <StackPanel Spacing="10">
+                                        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                            <Border x:Name="VirtStateDot" Width="9" Height="9" CornerRadius="4.5"
+                                                    Background="#8A8078" VerticalAlignment="Center" />
+                                            <TextBlock Text="虚拟麦克风" Style="{StaticResource SectionTitle}" />
+                                            <TextBlock x:Name="VirtStateText" Text="检测中…" Style="{StaticResource HintText}"
+                                                       VerticalAlignment="Center" />
+                                        </StackPanel>
+                                        <TextBlock x:Name="VirtHintText" Style="{StaticResource HintText}"
+                                                   TextWrapping="Wrap" Text="正在检测系统音频端点…" />
+
+                                        <Border Style="{StaticResource InnerCardStyle}">
+                                            <StackPanel Spacing="3">
+                                                <TextBlock Text="本软件写入（播放端点）" Style="{StaticResource MetricLabel}" />
+                                                <TextBlock x:Name="VirtRenderText" Text="—" FontSize="13"
+                                                           TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Style="{StaticResource InnerCardStyle}">
+                                            <StackPanel Spacing="3">
+                                                <TextBlock Text="OBS / 会议软件采集（录音端点）" Style="{StaticResource MetricLabel}" />
+                                                <TextBlock x:Name="VirtCaptureText" Text="—" FontSize="13"
+                                                           TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                                            </StackPanel>
+                                        </Border>
+
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <Button Content="刷新状态" Click="MicRefreshDevices_Click" />
+                                            <Button x:Name="VirtInstallerButton" Content="打开官方安装器"
+                                                    Style="{StaticResource AccentButtonStyle}" Click="VirtInstaller_Click" />
+                                        </StackPanel>
+                                        <Button Content="官网下载 VB-CABLE" HorizontalAlignment="Stretch"
+                                                Click="VirtDownload_Click" />
+                                        <TextBlock x:Name="VirtDriverNote" Style="{StaticResource HintText}"
+                                                   TextWrapping="Wrap"
+                                                   Text="VB-CABLE 版权归 VB-Audio / Vincent Burel 所有；本软件不随包分发、不自动安装驱动。" />
                                     </StackPanel>
                                 </Border>
 
                                 <Border Style="{StaticResource CardStyle}">
-                                    <StackPanel Spacing="10">
-                                        <TextBlock Text="信号路径" Style="{StaticResource SectionTitle}" />
+                                    <StackPanel Spacing="8">
+                                        <TextBlock Text="输入来源" Style="{StaticResource SectionTitle}" />
+                                        <RadioButton x:Name="MicInputDeviceRadio" GroupName="micInput"
+                                                     Content="电脑声卡 / USB 麦克风（默认）"
+                                                     Checked="MicInputSource_Changed" />
+                                        <RadioButton x:Name="MicInputMobileRadio" GroupName="micInput"
+                                                     Content="手机麦克风（Wi-Fi）"
+                                                     Checked="MicInputSource_Changed" />
+                                        <Border Style="{StaticResource InnerCardStyle}">
+                                            <StackPanel Spacing="3">
+                                                <TextBlock Text="当前物理设备" Style="{StaticResource MetricLabel}" />
+                                                <TextBlock x:Name="MicDeviceNameText" Text="未选择设备"
+                                                           FontSize="13" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                        </Border>
+                                        <TextBlock x:Name="MicDeviceRunText" Style="{StaticResource HintText}"
+                                                   TextWrapping="Wrap" Text="链路未运行。" />
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <Button Content="去主控页调整" Click="MicGoLive_Click" />
+                                        </StackPanel>
                                         <TextBlock Style="{StaticResource HintText}"
-                                                   Text="声卡输入的音频依次经过下面几段，每一段都可以单独旁通。" />
-                                        <Grid ColumnSpacing="6" RowSpacing="6">
+                                                   Text="切换来源后回「主控」页重新开始才会生效；设备、增益与降噪仍在主控页调整。" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+
+                        <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
+                            <StackPanel Spacing="12">
+                                <Border Style="{StaticResource CardStyle}">
+                                    <StackPanel Spacing="10">
+                                        <TextBlock Text="声音怎么走到 OBS" Style="{StaticResource SectionTitle}" />
+                                        <TextBlock Style="{StaticResource HintText}"
+                                                   Text="虚拟麦克风是系统级音频端点：本软件把处理后的声音写进 CABLE Input，另一端 CABLE Output 就是 OBS 看到的「麦克风」。" />
+                                        <Grid ColumnSpacing="8" RowSpacing="8">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
@@ -1502,73 +1522,86 @@
                                                 <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
                                             <Border Style="{StaticResource PillBorder}" Padding="10,3">
-                                                <TextBlock Text="物理麦克风" FontSize="12" />
+                                                <TextBlock Text="输入来源" FontSize="12" />
                                             </Border>
-                                            <TextBlock Grid.Column="1" Text="→" Style="{StaticResource HintText}"
-                                                       VerticalAlignment="Center" />
-                                            <TextBlock Grid.Column="2" Style="{StaticResource HintText}"
-                                                       Text="USB 麦克风或声卡输入，格式自动协商" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1" Style="{StaticResource HintText}"
+                                                       Text="电脑声卡麦克风，或 Wi-Fi 连接的手机麦克风" VerticalAlignment="Center" />
                                             <Border Grid.Row="1" Style="{StaticResource PillBorder}" Padding="10,3">
-                                                <TextBlock Text="AI 人声" FontSize="12" />
+                                                <TextBlock Text="效果链" FontSize="12" />
                                             </Border>
-                                            <TextBlock Grid.Row="1" Grid.Column="1" Text="→" Style="{StaticResource HintText}"
-                                                       VerticalAlignment="Center" />
-                                            <TextBlock Grid.Row="1" Grid.Column="2" Style="{StaticResource HintText}"
-                                                       Text="降噪与超分，关闭时 48 kHz 全带宽旁通" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="1" Grid.Column="1" Style="{StaticResource HintText}"
+                                                       Text="AI 降噪 / 超分 → 内置效果 → VST3 → 创意工坊" VerticalAlignment="Center" />
                                             <Border Grid.Row="2" Style="{StaticResource PillBorder}" Padding="10,3">
-                                                <TextBlock Text="内置效果" FontSize="12" />
+                                                <TextBlock Text="CABLE Input" FontSize="12" />
                                             </Border>
-                                            <TextBlock Grid.Row="2" Grid.Column="1" Text="→" Style="{StaticResource HintText}"
-                                                       VerticalAlignment="Center" />
-                                            <TextBlock Grid.Row="2" Grid.Column="2" Style="{StaticResource HintText}"
-                                                       Text="EQ、压缩、混响与创意工坊插件" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="2" Grid.Column="1" Style="{StaticResource HintText}"
+                                                       Text="本软件的播放输出；软件会自动选中这条线" VerticalAlignment="Center" />
                                             <Border Grid.Row="3" Style="{StaticResource PillBorder}" Padding="10,3">
-                                                <TextBlock Text="VST3" FontSize="12" />
+                                                <TextBlock Text="CABLE Output" FontSize="12" />
                                             </Border>
-                                            <TextBlock Grid.Row="3" Grid.Column="1" Text="→" Style="{StaticResource HintText}"
-                                                       VerticalAlignment="Center" />
-                                            <TextBlock Grid.Row="3" Grid.Column="2" Style="{StaticResource HintText}"
-                                                       Text="第三方插件链，可随时旁通" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="3" Grid.Column="1" Style="{StaticResource HintText}"
+                                                       Text="虚拟麦克风端点，供其他程序采集" VerticalAlignment="Center" />
                                             <Border Grid.Row="4" Style="{StaticResource PillBorder}" Padding="10,3">
-                                                <TextBlock Text="CABLE → OBS" FontSize="12" />
+                                                <TextBlock Text="OBS / 会议软件" FontSize="12" />
                                             </Border>
-                                            <TextBlock Grid.Row="4" Grid.Column="1" Text="→" Style="{StaticResource HintText}"
-                                                       VerticalAlignment="Center" />
-                                            <TextBlock Grid.Row="4" Grid.Column="2" Style="{StaticResource HintText}"
-                                                       Text="写入虚拟声卡，OBS 从 CABLE Output 采集" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="4" Grid.Column="1" Style="{StaticResource HintText}"
+                                                       Text="麦克风选 CABLE Output，听到的就是处理后的声音" VerticalAlignment="Center" />
                                         </Grid>
                                     </StackPanel>
                                 </Border>
 
                                 <Border Style="{StaticResource CardStyle}">
-                                    <StackPanel Spacing="10">
-                                        <TextBlock Text="链路自检" Style="{StaticResource SectionTitle}" />
-                                        <Grid ColumnSpacing="12" RowSpacing="10">
+                                    <StackPanel Spacing="8">
+                                        <TextBlock Text="运行状态" Style="{StaticResource SectionTitle}" />
+                                        <Grid ColumnSpacing="12">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="2*" />
                                             </Grid.ColumnDefinitions>
-                                            <StackPanel>
-                                                <TextBlock x:Name="MicCfgInRateText" Text="—" Style="{StaticResource ValueText}" />
-                                                <TextBlock Text="输入采样率" Style="{StaticResource MetricLabel}" />
+                                            <StackPanel Spacing="4">
+                                                <TextBlock x:Name="MicCfgLevelText" Text="—" Style="{StaticResource ValueText}" />
+                                                <TextBlock Text="输入电平（目标 -12 ~ -6 dB）" Style="{StaticResource MetricLabel}" />
+                                                <ProgressBar x:Name="MicCfgLevelBar" Height="6" Maximum="100" Value="0" />
                                             </StackPanel>
-                                            <StackPanel Grid.Column="1">
-                                                <TextBlock x:Name="MicCfgOutRateText" Text="—" Style="{StaticResource ValueText}" />
-                                                <TextBlock Text="输出采样率" Style="{StaticResource MetricLabel}" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Column="2">
-                                                <TextBlock x:Name="MicCfgLatencyText" Text="—" Style="{StaticResource ValueText}" />
-                                                <TextBlock Text="链路延迟" Style="{StaticResource MetricLabel}" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Column="3">
-                                                <TextBlock x:Name="MicCfgDropsText" Text="0" Style="{StaticResource ValueText}" />
-                                                <TextBlock Text="掉块" Style="{StaticResource MetricLabel}" />
-                                            </StackPanel>
+                                            <Grid Grid.Column="1" ColumnSpacing="10">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel>
+                                                    <TextBlock x:Name="MicCfgInRateText" Text="—" Style="{StaticResource ValueText}" />
+                                                    <TextBlock Text="输入采样率" Style="{StaticResource MetricLabel}" />
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="1">
+                                                    <TextBlock x:Name="MicCfgOutRateText" Text="—" Style="{StaticResource ValueText}" />
+                                                    <TextBlock Text="输出采样率" Style="{StaticResource MetricLabel}" />
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="2">
+                                                    <TextBlock x:Name="MicCfgLatencyText" Text="—" Style="{StaticResource ValueText}" />
+                                                    <TextBlock Text="链路延迟" Style="{StaticResource MetricLabel}" />
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="3">
+                                                    <TextBlock x:Name="MicCfgDropsText" Text="0" Style="{StaticResource ValueText}" />
+                                                    <TextBlock Text="掉块" Style="{StaticResource MetricLabel}" />
+                                                </StackPanel>
+                                            </Grid>
                                         </Grid>
                                         <TextBlock x:Name="MicCfgHealthText" Style="{StaticResource HintText}"
                                                    Text="引擎未运行；开始后这里显示实际采样率与延迟。" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource CardStyle}">
+                                    <StackPanel Spacing="6">
+                                        <TextBlock Text="三步接上 OBS" Style="{StaticResource SectionTitle}" />
+                                        <TextBlock Style="{StaticResource HintText}"
+                                                   Text="1. 左侧确认「虚拟麦克风」显示已就绪；没有就点「打开官方安装器」，手动以管理员身份运行 Setup_x64.exe 并重启。" />
+                                        <TextBlock Style="{StaticResource HintText}"
+                                                   Text="2. 回到「主控」页，输出设备会自动选中 CABLE Input，点开始。" />
+                                        <TextBlock Style="{StaticResource HintText}"
+                                                   Text="3. OBS 里添加「音频输入捕获」，设备选 CABLE Output；会议软件把麦克风改成同一个设备。" />
                                     </StackPanel>
                                 </Border>
 
@@ -1581,9 +1614,9 @@
                                         <StackPanel Spacing="4">
                                             <TextBlock Text="手机也能当麦克风" Style="{StaticResource SectionTitle}" />
                                             <TextBlock Style="{StaticResource HintText}"
-                                                       Text="没有声卡或想离开桌面走动时，把手机接进来：同一页切到「手机麦克风」，扫码配对即可，处理链路完全一样。" />
+                                                       Text="没有声卡或想离开桌面走动时切到手机视图扫码配对；处理后的声音照样从虚拟麦克风输出。" />
                                         </StackPanel>
-                                        <Button Grid.Column="1" Content="切换到手机麦克风" Click="MicGoMobile_Click"
+                                        <Button Grid.Column="1" Content="去配对手机" Click="MicGoMobile_Click"
                                                 VerticalAlignment="Center" />
                                     </Grid>
                                 </Border>

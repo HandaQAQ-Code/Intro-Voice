@@ -20,7 +20,7 @@ BASE_PY = Path(sys.base_prefix)
 SCRIPTS = ["mixer_service.py", "live_voice.py", "obs_audio.py", "super_resolution.py",
            "gpu_super_resolution.py", "gpu_extractor.py", "gpu_live.py",
            "vst3_scan_worker.py", "workshop_service.py", "market_service.py",
-           "mobile_mic.py"]
+           "mobile_mic.py", "virtual_device.py"]
 STDLIB_SKIP = {"site-packages", "test", "idlelib", "tkinter", "turtledemo", "lib2to3"}
 DATA_FILES = [
     ("data/target.wav", "data/target.wav"),
