@@ -122,6 +122,81 @@ def find_python(root: Path) -> str | None:
     return None
 
 
+def _python_matches(cand: str) -> tuple[str, str] | None:
+    """返回 (major, minor) 若 cand 是 3.11，否则 None。"""
+    try:
+        out = subprocess.run([cand, "-c",
+                              "import sys;print(sys.version_info[0],sys.version_info[1])"],
+                             capture_output=True, text=True, timeout=15, errors="ignore")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    parts = out.stdout.strip().split()
+    if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+        major, minor = int(parts[0]), int(parts[1])
+        if major == REQUIRED_PY_MAJOR and minor == REQUIRED_PY_MINOR:
+            return (str(major), str(minor))
+    return None
+
+
+def _native_candidates(root: Path) -> list[str]:
+    """所有可能是 3.11 的候选解释器（与 find_python 同序，但不去重、全部返回）。"""
+    candidates: list[str] = []
+    for name in ("python.exe", "pythonw.exe"):
+        bundled = root / "runtime" / name
+        if bundled.is_file():
+            candidates.append(str(bundled))
+    candidates += ["py", "python", "python3"]
+    local = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python"
+    for ver in ("Python311", "Python312", "Python310"):
+        exe = local / ver / "python.exe"
+        if exe.is_file():
+            candidates.append(str(exe))
+    # 去重保持顺序
+    seen: set[str] = set()
+    out: list[str] = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+def detect_native_torch(root: Path) -> dict | None:
+    """检测本机原生 Python 3.11 是否已装好可用的 CUDA 版 torch。
+
+    若找到，返回该解释器及其 site-packages 路径（可直接复用，无需下载）；
+    否则返回 None。这是「优先复用本机环境」的关键：原生通过就直接用原电脑的。
+    """
+    for cand in _native_candidates(root):
+        if _python_matches(cand) is None:
+            continue
+        # 让解释器报告 torch 版本、CUDA 是否可用、torch 所在目录。
+        # 用 torch.__file__ 的父目录（site-packages）定位，比 getsitepackages()[0] 更可靠。
+        probe = (
+            "import torch, os;"
+            "print(torch.__version__);"
+            "print('1' if torch.cuda.is_available() else '0');"
+            "print(os.path.dirname(os.path.dirname(torch.__file__)))"
+        )
+        try:
+            out = subprocess.run([cand, "-c", probe],
+                                 capture_output=True, text=True, timeout=30, errors="ignore")
+        except (OSError, subprocess.SubprocessError):
+            continue
+        lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+        if len(lines) < 3:
+            continue
+        version, cuda_flag, site = lines[0], lines[1], lines[2]
+        if cuda_flag == "1":
+            return {
+                "python": cand,
+                "sitePackages": site,
+                "torchVersion": version,
+                "cuda": True,
+            }
+    return None
+
+
 def _run_install(root: Path, python: str) -> None:
     target = gpu_packages_dir(root)
     target.mkdir(parents=True, exist_ok=True)
@@ -174,3 +249,63 @@ def start_install(root: Path) -> dict:
 
 def is_installed(root: Path) -> bool:
     return (gpu_packages_dir(root) / "torch").is_dir()
+
+
+def native_preference_path(root: Path) -> Path:
+    """记录「使用本机原生 Python 环境」选择的持久化文件。"""
+    return status_dir(root) / "native.json"
+
+
+def read_native_preference(root: Path) -> dict | None:
+    """读取用户已选择「复用本机 Python 环境」的记录。"""
+    p = native_preference_path(root)
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if data.get("enabled") and data.get("sitePackages"):
+            return data
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+def set_native_preference(root: Path, enabled: bool, native: dict | None = None) -> None:
+    """保存或清除「复用本机 Python 环境」的选择。"""
+    p = native_preference_path(root)
+    if enabled and native:
+        p.write_text(json.dumps({
+            "enabled": True,
+            "python": native.get("python", ""),
+            "sitePackages": native.get("sitePackages", ""),
+            "torchVersion": native.get("torchVersion", ""),
+        }, ensure_ascii=False), encoding="utf-8")
+    else:
+        if p.is_file():
+            p.unlink()
+
+
+def apply_native_to_syspath(root: Path) -> bool:
+    """把用户选择的「本机原生 Python site-packages」加入 sys.path，供 import torch 命中。
+
+    返回是否成功加入。这是「复用本机环境」的落地：不改主包、不下载，
+    引擎启动时优先把本机已装好的 torch 目录接进来。
+    """
+    pref = read_native_preference(root)
+    if not pref:
+        return False
+    site = str(pref.get("sitePackages") or "").strip()
+    if not site or not Path(site).is_dir():
+        return False
+    if site not in sys.path:
+        sys.path.insert(0, site)
+    # torch 的 C 扩展依赖它自带的 CUDA 运行库（torch/lib 下），
+    # 在 frozen 引擎里手动加入 DLL 搜索路径，确保 import 时不缺 DLL。
+    try:
+        lib_dir = Path(site) / "torch" / "lib"
+        if lib_dir.is_dir() and hasattr(os, "add_dll_directory"):
+            os.add_dll_directory(str(lib_dir))
+    except OSError:
+        pass
+    return True
+

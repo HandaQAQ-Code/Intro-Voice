@@ -38,10 +38,13 @@ SETTINGS_FILE = MIXER_DATA / "settings.json"
 DLL_PATH = ROOT / "native" / "bin" / "vst3host.dll"
 LOG = logging.getLogger("mixer_service")
 
-# GPU 档的 CUDA PyTorch 等依赖按需下载到 gpu_packages/，启动时加入 sys.path，
-# 这样「下载」后无需重装主程序，import torch 即可命中。不随主包分发以瘦身。
+# GPU 档的 CUDA PyTorch 支持有两种来源，按优先级在启动时接入 sys.path：
+#   1. 本机原生 Python 3.11 已装好 CUDA torch → 复用其 site-packages（优先，无需下载）；
+#   2. 用户点「下载」装到 gpu_packages/ → 复用该目录。
+# 两种都不随主包分发，用于瘦身。
 GPU_PACKAGES_DIR = ROOT / "gpu_packages"
-if GPU_PACKAGES_DIR.is_dir():
+_native_ok = gpu_install.apply_native_to_syspath(ROOT)
+if not _native_ok and GPU_PACKAGES_DIR.is_dir():
     for _sub in ("", "torch", "torchaudio", "torchvision"):
         _p = str(GPU_PACKAGES_DIR / _sub) if _sub else str(GPU_PACKAGES_DIR)
         if _p not in sys.path:
@@ -534,7 +537,7 @@ def gpu_capability() -> tuple[bool, str]:
     try:
         import torch
     except Exception:
-        return False, "未安装 CUDA 版 PyTorch（可在界面点「下载 GPU 支持」）"
+        return False, "未安装 CUDA 版 PyTorch（可复用本机 Python 环境，或点「下载 GPU 支持」）"
     try:
         if not torch.cuda.is_available():
             return False, "未检测到可用的 NVIDIA CUDA 设备"
@@ -1283,10 +1286,31 @@ class Service:
         gpu_ok, gpu_note = gpu_capability()
         status["available"] = gpu_ok
         status["note"] = gpu_note
+        # 附带本机原生环境检测结果，供界面展示「复用本机 / 下载」选项。
+        native = gpu_install.detect_native_torch(ROOT)
+        status["native"] = native
+        status["nativeEnabled"] = gpu_install.read_native_preference(ROOT) is not None
         return status
 
     def cmd_gpu_install(self, request):
         return gpu_install.start_install(ROOT)
+
+    def cmd_gpu_use_native(self, request):
+        """优先复用本机原生 Python 3.11 已装好的 CUDA torch，不下载。"""
+        native = gpu_install.detect_native_torch(ROOT)
+        if native is None:
+            return {"ok": False, "error": "未在本机检测到可用的 CUDA 版 PyTorch（需 Python 3.11 + torch + NVIDIA CUDA）。"}
+        gpu_install.set_native_preference(ROOT, True, native)
+        gpu_install.apply_native_to_syspath(ROOT)
+        # 立即重新评估能力（此时 site-packages 已加入 sys.path）。
+        gpu_ok, gpu_note = gpu_capability()
+        return {"ok": True, "native": native, "available": gpu_ok, "note": gpu_note,
+                "restart": not gpu_ok}
+
+    def cmd_gpu_use_download(self, request):
+        """放弃复用本机环境，改走独立下载（gpu_packages/）。"""
+        gpu_install.set_native_preference(ROOT, False)
+        return {"ok": True}
 
     def cmd_status(self, request):
         return self._status()

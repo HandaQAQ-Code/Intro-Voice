@@ -65,6 +65,8 @@ public sealed partial class MainWindow : Window
     private string _gpuNote = "";
     private bool _gpuInstalled;
     private bool _gpuInstalling;
+    private bool _gpuNativeAvailable;
+    private string _gpuNativeNote = "";
     private string _messageCache = "";
     private bool _marketLoading;
     private JsonElement _updateInfo;
@@ -262,6 +264,12 @@ public sealed partial class MainWindow : Window
             {
                 _gpuInstalled = Bool(gpuStatus, "installed");
                 _gpuInstalling = Bool(gpuStatus, "running");
+                if (gpuStatus.TryGetProperty("native", out var native)
+                    && native.ValueKind == JsonValueKind.Object)
+                {
+                    _gpuNativeAvailable = Bool(native, "cuda");
+                    _gpuNativeNote = Str(native, "torchVersion");
+                }
             }
             UpdateTierTexts();
             UpdateGpuDownloadUi();
@@ -461,33 +469,96 @@ public sealed partial class MainWindow : Window
         UpdateGpuDownloadUi();
     }
 
-    /// <summary>GPU 档的「下载支持」按钮：只在 GPU 不可用且未在安装时显示。</summary>
+    /// <summary>GPU 档的「复用本机 / 下载」选项：只在 GPU 不可用且未在安装时显示。</summary>
     private void UpdateGpuDownloadUi()
     {
         if (GpuDownloadButton is null) return;
+        // 隐藏两个按钮与提示（GPU 已可用时）。
         if (_gpuAvailable)
         {
+            GpuUseNativeButton.Visibility = Visibility.Collapsed;
             GpuDownloadButton.Visibility = Visibility.Collapsed;
             GpuDownloadHint.Visibility = Visibility.Collapsed;
             return;
         }
+        // 安装中：只显示进度提示。
         if (_gpuInstalling)
         {
+            GpuUseNativeButton.Visibility = Visibility.Collapsed;
             GpuDownloadButton.Visibility = Visibility.Collapsed;
             GpuDownloadHint.Visibility = Visibility.Visible;
             GpuDownloadHint.Text = "正在下载并安装 CUDA 版 PyTorch（约 2.5 GB），完成后请重启程序…";
             return;
         }
+
+        // 优先展示「复用本机 Python 环境」：原生通过就直接用原电脑的，不下载。
+        GpuUseNativeButton.Visibility = _gpuNativeAvailable
+            ? Visibility.Visible : Visibility.Collapsed;
         GpuDownloadButton.Visibility = Visibility.Visible;
         GpuDownloadHint.Visibility = Visibility.Visible;
-        GpuDownloadHint.Text = _gpuInstalled
-            ? "GPU 支持已下载但暂不可用（可能是没有 NVIDIA 显卡或驱动）。安装完成后重启即可。"
-            : "GPU 档需要额外下载 CUDA 版 PyTorch（约 2.5 GB）。点「下载 GPU 支持」按需安装，用于给主包瘦身。";
+
+        if (_gpuNativeAvailable)
+        {
+            GpuDownloadHint.Text = "检测到本机 Python 已装好 CUDA 版 PyTorch（"
+                + _gpuNativeNote + "）。优先推荐点「使用本机 Python 环境」直接复用，无需下载；"
+                + "也可点「下载 GPU 支持」装到本程序自己的目录。";
+        }
+        else if (_gpuInstalled)
+        {
+            GpuDownloadHint.Text = "GPU 支持已下载但暂不可用（可能是没有 NVIDIA 显卡或驱动）。安装完成后重启即可。";
+        }
+        else
+        {
+            GpuDownloadHint.Text = "GPU 档需要 CUDA 版 PyTorch（约 2.5 GB）。本机没有现成环境，"
+                + "点「下载 GPU 支持」按需安装，用于给主包瘦身。";
+        }
+    }
+
+    private async void GpuUseNative_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_connected) return;
+        GpuUseNativeButton.IsEnabled = false;
+        GpuDownloadButton.IsEnabled = false;
+        GpuDownloadHint.Text = "正在切换到本机 Python 环境…";
+        try
+        {
+            var result = await _client.CallAsync("gpu_use_native", new JsonObject(), 30000);
+            if (!Bool(result, "ok"))
+            {
+                string err = Str(result, "error");
+                GpuDownloadHint.Text = err.Length > 0 ? err : "无法使用本机环境。";
+                GpuUseNativeButton.IsEnabled = true;
+                GpuDownloadButton.IsEnabled = true;
+                return;
+            }
+            bool available = Bool(result, "available");
+            if (available)
+            {
+                _gpuAvailable = true;
+                _gpuNote = Str(result, "note");
+                GpuDownloadHint.Text = "已使用本机 Python 环境，GPU 档现在可用。";
+                UpdateTierTexts();
+                UpdateGpuDownloadUi();
+            }
+            else
+            {
+                GpuDownloadHint.Text = "已切换，但当前会话仍需重启程序后 GPU 档才会生效。";
+                GpuUseNativeButton.IsEnabled = true;
+                GpuDownloadButton.IsEnabled = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            GpuDownloadHint.Text = ex.Message;
+            GpuUseNativeButton.IsEnabled = true;
+            GpuDownloadButton.IsEnabled = true;
+        }
     }
 
     private async void GpuDownload_Click(object sender, RoutedEventArgs e)
     {
         if (!_connected) return;
+        GpuUseNativeButton.IsEnabled = false;
         GpuDownloadButton.IsEnabled = false;
         GpuDownloadHint.Text = "正在准备下载…";
         try
@@ -498,6 +569,7 @@ public sealed partial class MainWindow : Window
                 string err = Str(result, "error");
                 if (err.Length > 0) GpuDownloadHint.Text = err;
                 else GpuDownloadHint.Text = "无法启动下载。";
+                GpuUseNativeButton.IsEnabled = true;
                 GpuDownloadButton.IsEnabled = true;
                 return;
             }
@@ -508,6 +580,7 @@ public sealed partial class MainWindow : Window
         catch (Exception ex)
         {
             GpuDownloadHint.Text = ex.Message;
+            GpuUseNativeButton.IsEnabled = true;
             GpuDownloadButton.IsEnabled = true;
         }
     }
@@ -532,6 +605,7 @@ public sealed partial class MainWindow : Window
                 else
                 {
                     GpuDownloadHint.Text = msg;
+                    GpuUseNativeButton.IsEnabled = true;
                     GpuDownloadButton.IsEnabled = true;
                     UpdateGpuDownloadUi();
                     break;
@@ -541,6 +615,7 @@ public sealed partial class MainWindow : Window
             {
                 // 轮询失败就停，避免刷屏。
                 _gpuInstalling = false;
+                GpuUseNativeButton.IsEnabled = true;
                 GpuDownloadButton.IsEnabled = true;
                 UpdateGpuDownloadUi();
                 break;

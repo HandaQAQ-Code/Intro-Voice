@@ -222,6 +222,8 @@
                                     <ComboBox x:Name="AiModeCombo" Header="模式" HorizontalAlignment="Stretch"
                                               SelectionChanged="AiMode_Changed" />
                                     <TextBlock x:Name="AiModeHint" Style="{StaticResource HintText}" />
+                                    <Button x:Name="GpuUseNativeButton" Content="使用本机 Python 环境" Visibility="Collapsed"
+                                            HorizontalAlignment="Stretch" Click="GpuUseNative_Click" />
                                     <Button x:Name="GpuDownloadButton" Content="下载 GPU 支持" Visibility="Collapsed"
                                             HorizontalAlignment="Stretch" Click="GpuDownload_Click" />
                                     <TextBlock x:Name="GpuDownloadHint" Style="{StaticResource HintText}"

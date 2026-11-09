@@ -107,9 +107,15 @@ copy app\build\outputs\apk\release\app-release.apk ..\mobile\IntroVoiceMic.apk
 封装后的 `mixer_service\` 目录把引擎代码与 numpy / onnxruntime / 声纹 / 超分等依赖
 封进 `_internal\`（无 .py 源码）；`data/`、`native/`、`mobile/` 等运行时资源放在引擎目录旁。
 
-GPU 档的 CUDA PyTorch（约 2.5 GB）**不随主包分发**以瘦身：用户在主控页 GPU 档不可用时
-点「下载 GPU 支持」，程序用系统 Python 3.11 把依赖装到 `mixer_service\gpu_packages\`，
-装完重启即可选 GPU 档。详见 `gpu_install.py`。
+GPU 档的 CUDA PyTorch（约 2.5 GB）**不随主包分发**以瘦身。用户在主控页 GPU 档不可用时
+有两种方式获取，界面按优先级给出选项：
+
+1. **复用本机 Python 环境**（优先）：若本机已装 Python 3.11 且其 `torch` 带 CUDA
+   （`torch.cuda.is_available()`），点「使用本机 Python 环境」直接复用，无需下载、无需重启；
+2. **下载独立安装**：点「下载 GPU 支持」，程序用系统 Python 3.11 把依赖装到
+   `mixer_service\gpu_packages\`，装完重启即可选 GPU 档。
+
+详见 `gpu_install.py`（含 `detect_native_torch` / `apply_native_to_syspath`）。
 
 ## 自测
 
