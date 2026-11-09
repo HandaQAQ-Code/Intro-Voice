@@ -141,7 +141,17 @@ def fetch_catalog(root: Path, url: str | None = None, force: bool = False) -> di
         return result
     except Exception as exc:
         if cached.get("plugins"):
-            return {**cached, "cached": True, "error": f"远程目录不可用，显示本地缓存：{exc}"}
+            return {**cached, "cached": True, "error": f"远程目录不可用，显示上次缓存：{exc}"}
+        bundled = root / "plugin-registry" / "catalog.json"
+        if bundled.is_file():
+            try:
+                payload = json.loads(bundled.read_text(encoding="utf-8"))
+                entries = [e for e in (_validate_entry(i) for i in payload.get("plugins") or []) if e]
+                if entries:
+                    return {"source": str(bundled), "plugins": entries, "cached": True,
+                            "bundled": True, "error": f"远程目录不可用，已加载随包目录：{exc}"}
+            except (OSError, ValueError):
+                pass
         return {"source": target, "plugins": [], "cached": False,
                 "error": f"无法获取插件目录：{exc}"}
 

@@ -552,6 +552,7 @@ class MixerEngine:
         self.latency_samples = 0
         self.dsp = DspChain(CHAIN_RATE, 2)
         self.dsp_params = dsp_default_params()
+        self.spectrum = [0.0] * 32
 
     # -- lifecycle ---------------------------------------------------------
     def start(self, cfg: dict) -> None:
@@ -706,6 +707,7 @@ class MixerEngine:
                             self.rtf = 0.9 * self.rtf + 0.1 * elapsed / max(1e-6, len(audio) / self.input_rate)
                             self.input_db = 20 * np.log10(float(np.sqrt(np.mean(audio ** 2))) + 1e-9)
                             if len(processed):
+                                self._update_spectrum(processed)
                                 self.buffer.put(processed)
         except Exception as exc:
             LOG.exception("音频处理停止")
@@ -730,6 +732,30 @@ class MixerEngine:
                 self.events.put_nowait(("stopped", None))
             except queue.Full:
                 pass
+
+
+    SPECTRUM_BANDS = 32
+    SPECTRUM_EDGES = np.geomspace(40.0, 16000.0, 33)
+
+    def _update_spectrum(self, block: np.ndarray) -> None:
+        """对输出块做一次短 FFT，得到 32 段对数频带电平（0..1），供界面绘制。"""
+        try:
+            mono = block.mean(axis=1)
+            if len(mono) < 512:
+                return
+            window = mono[-1024:] * np.hanning(min(1024, len(mono)))
+            spec = np.abs(np.fft.rfft(window))
+            freqs = np.fft.rfftfreq(len(window), 1.0 / CHAIN_RATE)
+            level = np.zeros(self.SPECTRUM_BANDS)
+            for i in range(self.SPECTRUM_BANDS):
+                mask = (freqs >= self.SPECTRUM_EDGES[i]) & (freqs < self.SPECTRUM_EDGES[i + 1])
+                if mask.any():
+                    level[i] = float(spec[mask].mean())
+            norm = np.clip((20.0 * np.log10(level + 1e-9) + 72.0) / 66.0, 0.0, 1.0)
+            prev = np.asarray(self.spectrum)
+            self.spectrum = (0.55 * prev + 0.45 * norm).round(4).tolist()
+        except Exception:
+            pass
 
     def _process_block(self, audio, resampler, limiter, models, sample):
         if self.ai_mode != "off":
@@ -1051,6 +1077,7 @@ class Service:
                 "system": self.monitor.metrics(),
                 "dsp": eng.dsp.metrics() if eng else {},
                 "progress": self.progress,
+                "spectrum": getattr(eng, "spectrum", []) if eng else [],
                 "chainError": self.chain_error}
 
     def _ensure_chain(self):

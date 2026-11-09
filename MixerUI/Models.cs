@@ -94,5 +94,5 @@ public sealed class MarketItem
     public string Summary { get; init; } = "";
     public bool Installed { get; init; }
     public bool CanInstall { get; init; }
-    public string ActionText => Installed ? "卸载" : CanInstall ? "安装" : "打开官网";
+    public string ActionText => Installed ? "卸载" : CanInstall ? "安装" : "查看官网";
 }

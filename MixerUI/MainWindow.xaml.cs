@@ -7,6 +7,8 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Hosting;
+using Microsoft.UI.Composition;
 using Windows.Graphics;
 using Windows.UI;
 
@@ -548,6 +550,7 @@ public sealed partial class MainWindow : Window
         MuteButton.Content = _muted ? "取消静音" : "静音";
 
         ApplySystemMetrics(status);
+        ApplySpectrum(status, running);
         ApplyDspStatus(status);
 
         var messages = new List<string>();
@@ -593,6 +596,23 @@ public sealed partial class MainWindow : Window
             : "门状态 —（未启用）";
         int nan = (int)Num(dsp, "nanBlocks", 0);
         if (nan > 0) DspStatusText.Text = $"顺序：高通 → 低通 → 噪声门 → 压缩 → 三段 EQ → VST3 链 → 限幅（异常块 {nan}）";
+    }
+
+    /// <summary>把引擎算好的 32 段频谱交给自绘控件；停止时归零。</summary>
+    private void ApplySpectrum(JsonElement status, bool running)
+    {
+        if (!status.TryGetProperty("spectrum", out var array) || array.ValueKind != JsonValueKind.Array)
+            return;
+        var levels = new List<float>(32);
+        foreach (var item in array.EnumerateArray())
+            levels.Add((float)item.GetDouble());
+        if (levels.Count == 0) return;
+        if (!running)
+        {
+            for (int i = 0; i < levels.Count; i++) levels[i] = 0.06f;
+        }
+        Spectrum.SetLevels(levels);
+        SpectrumHint.Text = running ? "处理后的实时频谱；峰值保持由引擎侧平滑。" : "未运行：频谱静止。";
     }
 
     private static double MeterValue(double db) => Math.Clamp((db + 60) / 60, 0, 1);
@@ -672,10 +692,34 @@ public sealed partial class MainWindow : Window
             ("market", PageMarket), ("presets", PagePresets), ("help", PageHelp),
         };
         foreach (var (pageTag, page) in pages)
-            page.Visibility = pageTag == tag ? Visibility.Visible : Visibility.Collapsed;
+        {
+            bool show = pageTag == tag;
+            page.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            if (show) FadeIn(page);
+        }
 
         if (tag == "market" && _market.Count == 0)
             _ = LoadMarketAsync(false);
+    }
+
+    /// <summary>页面切换的 180 ms 淡入，Composition 驱动，不触发重新布局。</summary>
+    private static void FadeIn(UIElement element)
+    {
+        try
+        {
+            var visual = ElementCompositionPreview.GetElementVisual(element);
+            var compositor = visual.Compositor;
+            visual.Opacity = 0f;
+            var animation = compositor.CreateScalarKeyFrameAnimation();
+            animation.InsertKeyFrame(0f, 0f);
+            animation.InsertKeyFrame(1f, 1f);
+            animation.Duration = TimeSpan.FromMilliseconds(180);
+            visual.StartAnimation("Opacity", animation);
+        }
+        catch
+        {
+            // 动画失败不影响功能
+        }
     }
 
     // ------------------------------------------------------------------
@@ -732,9 +776,12 @@ public sealed partial class MainWindow : Window
             string error = Str(catalog, "error");
             bool cached = catalog.TryGetProperty("cached", out var c) && c.ValueKind == JsonValueKind.True;
             MarketSourceText.Text = $"目录：{Str(catalog, "source")}" + (cached ? "（本地缓存）" : "");
-            MarketStatusText.Text = error.Length > 0
-                ? error
-                : $"共 {_market.Count} 个条目 · 已安装 {installedSet.Count} 个 · 安装目录 {Str(result, "userDir")}";
+            bool bundled = catalog.TryGetProperty("bundled", out var b) && b.ValueKind == JsonValueKind.True;
+            MarketStatusText.Text = bundled
+                ? $"远程目录不可用，已使用随包目录（离线）· {_market.Count} 个条目"
+                : error.Length > 0
+                    ? "目录加载失败，点「刷新目录」重试"
+                    : $"共 {_market.Count} 个条目 · 已安装 {installedSet.Count} 个 · 安装目录 {Str(result, "userDir")}";
         }
         catch (Exception ex)
         {
