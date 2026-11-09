@@ -90,9 +90,9 @@
                         <FontIcon Glyph="&#xE70F;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
-                <NavigationViewItem Content="手机麦克风" Tag="mobile">
+                <NavigationViewItem Content="麦克风配置" Tag="mic">
                     <NavigationViewItem.Icon>
-                        <SymbolIcon Symbol="Phone" />
+                        <FontIcon Glyph="&#xE720;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem Tag="plugins">
@@ -1183,208 +1183,414 @@
             </Grid>
 
             <!-- 手机麦克风 -->
-            <Grid x:Name="PageMobileMic" Visibility="Collapsed" Padding="18,14,18,18" ColumnSpacing="14">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="356" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
+            <!-- 麦克风配置：电脑声卡为默认来源，手机麦克风是同一页里的无线派生来源 -->
+            <Grid x:Name="PageMicConfig" Visibility="Collapsed" Padding="18,14,18,18" RowSpacing="12">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
 
-                <Border Style="{StaticResource CardStyle}">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <StackPanel Spacing="10">
-                            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                <Border x:Name="MicStateDot" Width="9" Height="9" CornerRadius="4.5"
-                                        Background="#8A8078" VerticalAlignment="Center" />
-                                <TextBlock Text="手机麦克风" Style="{StaticResource SectionTitle}" />
-                                <TextBlock x:Name="MicStateText" Text="未启动" Style="{StaticResource HintText}"
-                                           VerticalAlignment="Center" />
+                <Border Style="{StaticResource CardStyle}" Padding="16,12">
+                    <Grid ColumnSpacing="16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="3" VerticalAlignment="Center">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <FontIcon Glyph="&#xE720;" FontSize="16"
+                                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                <TextBlock Text="麦克风配置" Style="{StaticResource SectionTitle}" />
+                                <Border Style="{StaticResource PillBorder}" Padding="8,1" VerticalAlignment="Center">
+                                    <TextBlock Text="输入源" FontSize="11" />
+                                </Border>
                             </StackPanel>
                             <TextBlock Style="{StaticResource HintText}"
-                                       Text="手机采集、Wi-Fi 直传，电脑端做增益 / 高通 / 噪声门，再进入效果器链路。音频只在局域网内传输，不经过任何服务器。" />
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <Button x:Name="MicToggleButton" Content="启动服务"
-                                        Style="{StaticResource AccentButtonStyle}" Click="MicToggle_Click" />
-                                <Button Content="复制连接信息" Click="MicCopy_Click" />
-                            </StackPanel>
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <Button Content="打开安装页" Click="MicInstallPage_Click" />
-                                <Button Content="定位安装包" Click="MicApk_Click" />
-                            </StackPanel>
+                                       Text="先决定声音从哪进来，再看这一路的电平与处理。电脑声卡即插即用；手机麦克风是它的无线扩展，走局域网直连。" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                            <ToggleButton x:Name="MicSrcDeviceToggle" Click="MicSourceToggle_Click"
+                                          MinWidth="158" Padding="12,8" HorizontalContentAlignment="Left">
+                                <StackPanel Spacing="1">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xE7F5;" FontSize="13" />
+                                        <TextBlock Text="电脑声卡" FontWeight="SemiBold" />
+                                    </StackPanel>
+                                    <TextBlock Text="USB / XLR 麦克风" FontSize="11" Opacity="0.72" />
+                                </StackPanel>
+                            </ToggleButton>
+                            <ToggleButton x:Name="MicSrcMobileToggle" Click="MicSourceToggle_Click"
+                                          MinWidth="158" Padding="12,8" HorizontalContentAlignment="Left">
+                                <StackPanel Spacing="1">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xE8B8;" FontSize="13" />
+                                        <TextBlock Text="手机麦克风" FontWeight="SemiBold" />
+                                    </StackPanel>
+                                    <TextBlock Text="Wi-Fi 无线接入" FontSize="11" Opacity="0.72" />
+                                </StackPanel>
+                            </ToggleButton>
+                        </StackPanel>
+                    </Grid>
+                </Border>
 
-                            <Border Style="{StaticResource InnerCardStyle}">
-                                <StackPanel Spacing="4">
-                                    <TextBlock Text="电脑地址" Style="{StaticResource MetricLabel}" />
-                                    <TextBlock x:Name="MicEndpointText" Text="服务未启动"
-                                               FontFamily="{StaticResource CodeFontFamily}" FontSize="15" />
-                                    <TextBlock Text="连接 PIN" Style="{StaticResource MetricLabel}" Margin="0,8,0,0" />
-                                    <TextBlock x:Name="MicPinText" Text="——" FontFamily="{StaticResource CodeFontFamily}"
-                                               FontSize="26" FontWeight="SemiBold" CharacterSpacing="140"
-                                               Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                <Grid Grid.Row="1">
+                    <!-- ========== A. 手机麦克风（无线扩展） ========== -->
+                    <Grid x:Name="MicMobileView" ColumnSpacing="14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="356" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Style="{StaticResource CardStyle}">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Spacing="10">
+                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                        <Border x:Name="MicStateDot" Width="9" Height="9" CornerRadius="4.5"
+                                                Background="#8A8078" VerticalAlignment="Center" />
+                                        <TextBlock Text="无线配对" Style="{StaticResource SectionTitle}" />
+                                        <TextBlock x:Name="MicStateText" Text="未启动" Style="{StaticResource HintText}"
+                                                   VerticalAlignment="Center" />
+                                    </StackPanel>
+                                    <TextBlock Style="{StaticResource HintText}"
+                                               Text="手机采集、Wi-Fi 直传，电脑端做增益 / 高通 / 噪声门，再进入效果器链路。音频只在局域网内传输，不经过任何服务器。" />
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button x:Name="MicToggleButton" Content="启动服务"
+                                                Style="{StaticResource AccentButtonStyle}" Click="MicToggle_Click" />
+                                        <Button Content="复制连接信息" Click="MicCopy_Click" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button Content="打开安装页" Click="MicInstallPage_Click" />
+                                        <Button Content="定位安装包" Click="MicApk_Click" />
+                                    </StackPanel>
+
+                                    <Border Style="{StaticResource InnerCardStyle}">
+                                        <StackPanel Spacing="4">
+                                            <TextBlock Text="电脑地址" Style="{StaticResource MetricLabel}" />
+                                            <TextBlock x:Name="MicEndpointText" Text="服务未启动"
+                                                       FontFamily="{StaticResource CodeFontFamily}" FontSize="15" />
+                                            <TextBlock Text="连接 PIN" Style="{StaticResource MetricLabel}" Margin="0,8,0,0" />
+                                            <TextBlock x:Name="MicPinText" Text="——" FontFamily="{StaticResource CodeFontFamily}"
+                                                       FontSize="26" FontWeight="SemiBold" CharacterSpacing="140"
+                                                       Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Grid x:Name="MicQrRow" ColumnSpacing="10" Visibility="Collapsed">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Spacing="6">
+                                            <Border x:Name="MicConnectQrBox" Background="White" CornerRadius="10" Padding="6">
+                                                <Image x:Name="MicConnectQr" Height="148" Stretch="Uniform" />
+                                            </Border>
+                                            <TextBlock Text="扫码连接手机" Style="{StaticResource HintText}"
+                                                       HorizontalAlignment="Center" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" Spacing="6">
+                                            <Border x:Name="MicInstallQrBox" Background="White" CornerRadius="10" Padding="6">
+                                                <Image x:Name="MicInstallQr" Height="148" Stretch="Uniform" />
+                                            </Border>
+                                            <TextBlock Text="扫码安装 App" Style="{StaticResource HintText}"
+                                                       HorizontalAlignment="Center" />
+                                        </StackPanel>
+                                    </Grid>
+                                    <TextBlock x:Name="MicQrHint" Style="{StaticResource HintText}"
+                                               Text="手机与电脑连同一个 Wi-Fi，用系统相机或微信扫码；已装 App 会自动带出地址与 PIN。" />
+                                    <Border Style="{StaticResource InnerCardStyle}">
+                                        <StackPanel Spacing="4">
+                                            <TextBlock Text="手机端还能调" Style="{StaticResource MetricLabel}" />
+                                            <TextBlock Style="{StaticResource HintText}"
+                                                       Text="采样率、帧长、采集源，系统降噪 / 回声消除，以及手机本地增益；锁屏后由前台服务继续推流。" />
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Border>
+
+                        <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
+                            <StackPanel Spacing="12">
+                                <Border Style="{StaticResource CardStyle}">
+                                    <StackPanel Spacing="12">
+                                        <TextBlock Text="连接状态" Style="{StaticResource SectionTitle}" />
+                                        <Grid RowSpacing="10" ColumnSpacing="12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+                                            <StackPanel>
+                                                <TextBlock x:Name="MicClientsText" Text="0" Style="{StaticResource ValueText}" />
+                                                <TextBlock Text="已连接设备" Style="{StaticResource MetricLabel}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1">
+                                                <TextBlock x:Name="MicRateText" Text="—" Style="{StaticResource ValueText}" />
+                                                <TextBlock Text="手机采样率" Style="{StaticResource MetricLabel}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock x:Name="MicLevelText" Text="—" Style="{StaticResource ValueText}" />
+                                                <TextBlock Text="输入电平" Style="{StaticResource MetricLabel}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Row="1">
+                                                <TextBlock x:Name="MicBufferText" Text="—" Style="{StaticResource ValueText}" />
+                                                <TextBlock Text="缓冲" Style="{StaticResource MetricLabel}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Row="1" Grid.Column="1">
+                                                <TextBlock x:Name="MicPacketsText" Text="0" Style="{StaticResource ValueText}" />
+                                                <TextBlock Text="接收包数" Style="{StaticResource MetricLabel}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Row="1" Grid.Column="2">
+                                                <TextBlock x:Name="MicDropText" Text="0" Style="{StaticResource ValueText}" />
+                                                <TextBlock Text="丢包 / 溢出" Style="{StaticResource MetricLabel}" />
+                                            </StackPanel>
+                                        </Grid>
+                                        <ProgressBar x:Name="MicLevelBar" Height="6" Maximum="100" Value="0" />
+                                        <TextBlock x:Name="MicDeviceText" Style="{StaticResource HintText}"
+                                                   Text="等待手机连接…" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource CardStyle}">
+                                    <StackPanel Spacing="6">
+                                        <TextBlock Text="这一路的处理" Style="{StaticResource SectionTitle}" />
+                                        <TextBlock Style="{StaticResource HintText}"
+                                                   Text="只作用于手机送来的音频，改完立即生效；手机 App 里也能调同一组参数。声卡输入的增益与降噪在主控页。" />
+
+                                        <Grid ColumnSpacing="10" Margin="0,8,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="110" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="66" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="输入增益" VerticalAlignment="Center" />
+                                            <Slider x:Name="MicGainSlider" Grid.Column="1" ValueChanged="MicSlider_Changed" />
+                                            <TextBlock x:Name="MicGainValue" Grid.Column="2" HorizontalAlignment="Right"
+                                                       Style="{StaticResource ValueText}" />
+                                        </Grid>
+
+                                        <Grid ColumnSpacing="10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="110" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="66" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="高通" VerticalAlignment="Center" />
+                                            <Slider x:Name="MicHpfSlider" Grid.Column="1" ValueChanged="MicSlider_Changed" />
+                                            <TextBlock x:Name="MicHpfValue" Grid.Column="2" HorizontalAlignment="Right"
+                                                       Style="{StaticResource ValueText}" />
+                                        </Grid>
+
+                                        <Grid ColumnSpacing="10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="110" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="66" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="噪声门" VerticalAlignment="Center" />
+                                            <Slider x:Name="MicGateSlider" Grid.Column="1" ValueChanged="MicSlider_Changed" />
+                                            <TextBlock x:Name="MicGateValue" Grid.Column="2" HorizontalAlignment="Right"
+                                                       Style="{StaticResource ValueText}" />
+                                        </Grid>
+
+                                        <Grid ColumnSpacing="10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="110" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="66" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="抖动缓冲" VerticalAlignment="Center" />
+                                            <Slider x:Name="MicJitterSlider" Grid.Column="1" ValueChanged="MicSlider_Changed" />
+                                            <TextBlock x:Name="MicJitterValue" Grid.Column="2" HorizontalAlignment="Right"
+                                                       Style="{StaticResource ValueText}" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource CardStyle}">
+                                    <StackPanel Spacing="6">
+                                        <TextBlock Text="三步上手" Style="{StaticResource SectionTitle}" />
+                                        <TextBlock Style="{StaticResource HintText}"
+                                                   Text="1. 点「启动服务」，记下电脑地址与 PIN。" />
+                                        <TextBlock Style="{StaticResource HintText}"
+                                                   Text="2. 手机上安装 Intro Voice Mic，扫码或手填地址和 PIN，点连接。" />
+                                        <TextBlock Style="{StaticResource HintText}"
+                                                   Text="3. 到「主控」页点开始；手机锁屏也能继续推流。" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+
+                    <!-- ========== B. 电脑声卡（默认来源） ========== -->
+                    <Grid x:Name="MicDeviceView" ColumnSpacing="14" Visibility="Collapsed">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="356" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Spacing="12">
+                            <Border Style="{StaticResource CardStyle}">
+                                <StackPanel Spacing="8">
+                                    <TextBlock Text="当前输入设备" Style="{StaticResource SectionTitle}" />
+                                    <TextBlock x:Name="MicDeviceNameText" Text="未选择"
+                                               Style="{StaticResource ValueText}" TextWrapping="Wrap" />
+                                    <TextBlock Style="{StaticResource HintText}"
+                                               Text="设备列表在这里只做展示，选择与刷新在主控页，避免两处状态打架。" />
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button Content="去主控页选择设备" Click="MicGoLive_Click"
+                                                Style="{StaticResource AccentButtonStyle}" />
+                                        <Button Content="刷新设备列表" Click="MicRefreshDevices_Click" />
+                                    </StackPanel>
                                 </StackPanel>
                             </Border>
 
-                            <Grid x:Name="MicQrRow" ColumnSpacing="10" Visibility="Collapsed">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
+                            <Border Style="{StaticResource CardStyle}">
                                 <StackPanel Spacing="6">
-                                    <Border x:Name="MicConnectQrBox" Background="White" CornerRadius="10" Padding="6">
-                                        <Image x:Name="MicConnectQr" Height="148" Stretch="Uniform" />
-                                    </Border>
-                                    <TextBlock Text="扫码连接手机" Style="{StaticResource HintText}"
-                                               HorizontalAlignment="Center" />
-                                </StackPanel>
-                                <StackPanel Grid.Column="1" Spacing="6">
-                                    <Border x:Name="MicInstallQrBox" Background="White" CornerRadius="10" Padding="6">
-                                        <Image x:Name="MicInstallQr" Height="148" Stretch="Uniform" />
-                                    </Border>
-                                    <TextBlock Text="扫码安装 App" Style="{StaticResource HintText}"
-                                               HorizontalAlignment="Center" />
-                                </StackPanel>
-                            </Grid>
-                            <TextBlock x:Name="MicQrHint" Style="{StaticResource HintText}"
-                                       Text="手机与电脑连同一个 Wi-Fi，用系统相机或微信扫码；已装 App 会自动带出地址与 PIN。" />
-                            <Border Style="{StaticResource InnerCardStyle}">
-                                <StackPanel Spacing="4">
-                                    <TextBlock Text="手机端还能调" Style="{StaticResource MetricLabel}" />
+                                    <TextBlock Text="声卡这一路的调节" Style="{StaticResource SectionTitle}" />
                                     <TextBlock Style="{StaticResource HintText}"
-                                               Text="采样率、帧长、采集源，系统降噪 / 回声消除，以及手机本地增益；锁屏后由前台服务继续推流。" />
+                                               Text="输入增益、降噪门限、超分强度与延迟模式，都在主控页「AI 人声处理」里；内置效果与 VST3 在各自页面。" />
+                                    <TextBlock x:Name="MicDeviceRunText" Style="{StaticResource HintText}"
+                                               Text="链路未运行。" />
+                                </StackPanel>
+                            </Border>
+
+                            <Border Style="{StaticResource CardStyle}">
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="挑设备的三条经验" Style="{StaticResource SectionTitle}" />
                                     <TextBlock Style="{StaticResource HintText}"
-                                               Text="电脑端的增益、高通、噪声门、抖动缓冲在这页右侧随时可改，手机 App 里也能同步调节。" />
+                                               Text="· 优先选带 USB / Microphone 的条目，别选「立体声混音」，会重复录到系统声。" />
+                                    <TextBlock Style="{StaticResource HintText}"
+                                               Text="· 动圈麦常要 +10 dB 以上增益；电容麦一般 0 dB 就够。" />
+                                    <TextBlock Style="{StaticResource HintText}"
+                                               Text="· 换设备后回主控页重新开始，采样率会重新协商。" />
                                 </StackPanel>
                             </Border>
                         </StackPanel>
-                    </ScrollViewer>
-                </Border>
 
-                <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
-                    <StackPanel Spacing="12">
-                        <Border Style="{StaticResource CardStyle}">
+                        <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
                             <StackPanel Spacing="12">
-                                <TextBlock Text="连接状态" Style="{StaticResource SectionTitle}" />
-                                <Grid RowSpacing="10" ColumnSpacing="12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-                                    <StackPanel>
-                                        <TextBlock x:Name="MicClientsText" Text="0" Style="{StaticResource ValueText}" />
-                                        <TextBlock Text="已连接设备" Style="{StaticResource MetricLabel}" />
+                                <Border Style="{StaticResource CardStyle}">
+                                    <StackPanel Spacing="8">
+                                        <TextBlock Text="当前输入电平" Style="{StaticResource SectionTitle}" />
+                                        <TextBlock x:Name="MicCfgLevelText" Text="—" Style="{StaticResource ValueText}" />
+                                        <ProgressBar x:Name="MicCfgLevelBar" Height="6" Maximum="100" Value="0" />
+                                        <TextBlock Style="{StaticResource HintText}"
+                                                   Text="目标 -12 ~ -6 dB：太低就加输入增益，经常冲到 0 就减一点。" />
                                     </StackPanel>
-                                    <StackPanel Grid.Column="1">
-                                        <TextBlock x:Name="MicRateText" Text="—" Style="{StaticResource ValueText}" />
-                                        <TextBlock Text="手机采样率" Style="{StaticResource MetricLabel}" />
+                                </Border>
+
+                                <Border Style="{StaticResource CardStyle}">
+                                    <StackPanel Spacing="10">
+                                        <TextBlock Text="信号路径" Style="{StaticResource SectionTitle}" />
+                                        <TextBlock Style="{StaticResource HintText}"
+                                                   Text="声卡输入的音频依次经过下面几段，每一段都可以单独旁通。" />
+                                        <Grid ColumnSpacing="6" RowSpacing="6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+                                            <Border Style="{StaticResource PillBorder}" Padding="10,3">
+                                                <TextBlock Text="物理麦克风" FontSize="12" />
+                                            </Border>
+                                            <TextBlock Grid.Column="1" Text="→" Style="{StaticResource HintText}"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="2" Style="{StaticResource HintText}"
+                                                       Text="USB 麦克风或声卡输入，格式自动协商" VerticalAlignment="Center" />
+                                            <Border Grid.Row="1" Style="{StaticResource PillBorder}" Padding="10,3">
+                                                <TextBlock Text="AI 人声" FontSize="12" />
+                                            </Border>
+                                            <TextBlock Grid.Row="1" Grid.Column="1" Text="→" Style="{StaticResource HintText}"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="1" Grid.Column="2" Style="{StaticResource HintText}"
+                                                       Text="降噪与超分，关闭时 48 kHz 全带宽旁通" VerticalAlignment="Center" />
+                                            <Border Grid.Row="2" Style="{StaticResource PillBorder}" Padding="10,3">
+                                                <TextBlock Text="内置效果" FontSize="12" />
+                                            </Border>
+                                            <TextBlock Grid.Row="2" Grid.Column="1" Text="→" Style="{StaticResource HintText}"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="2" Grid.Column="2" Style="{StaticResource HintText}"
+                                                       Text="EQ、压缩、混响与创意工坊插件" VerticalAlignment="Center" />
+                                            <Border Grid.Row="3" Style="{StaticResource PillBorder}" Padding="10,3">
+                                                <TextBlock Text="VST3" FontSize="12" />
+                                            </Border>
+                                            <TextBlock Grid.Row="3" Grid.Column="1" Text="→" Style="{StaticResource HintText}"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="3" Grid.Column="2" Style="{StaticResource HintText}"
+                                                       Text="第三方插件链，可随时旁通" VerticalAlignment="Center" />
+                                            <Border Grid.Row="4" Style="{StaticResource PillBorder}" Padding="10,3">
+                                                <TextBlock Text="CABLE → OBS" FontSize="12" />
+                                            </Border>
+                                            <TextBlock Grid.Row="4" Grid.Column="1" Text="→" Style="{StaticResource HintText}"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="4" Grid.Column="2" Style="{StaticResource HintText}"
+                                                       Text="写入虚拟声卡，OBS 从 CABLE Output 采集" VerticalAlignment="Center" />
+                                        </Grid>
                                     </StackPanel>
-                                    <StackPanel Grid.Column="2">
-                                        <TextBlock x:Name="MicLevelText" Text="—" Style="{StaticResource ValueText}" />
-                                        <TextBlock Text="输入电平" Style="{StaticResource MetricLabel}" />
+                                </Border>
+
+                                <Border Style="{StaticResource CardStyle}">
+                                    <StackPanel Spacing="10">
+                                        <TextBlock Text="链路自检" Style="{StaticResource SectionTitle}" />
+                                        <Grid ColumnSpacing="12" RowSpacing="10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock x:Name="MicCfgInRateText" Text="—" Style="{StaticResource ValueText}" />
+                                                <TextBlock Text="输入采样率" Style="{StaticResource MetricLabel}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1">
+                                                <TextBlock x:Name="MicCfgOutRateText" Text="—" Style="{StaticResource ValueText}" />
+                                                <TextBlock Text="输出采样率" Style="{StaticResource MetricLabel}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock x:Name="MicCfgLatencyText" Text="—" Style="{StaticResource ValueText}" />
+                                                <TextBlock Text="链路延迟" Style="{StaticResource MetricLabel}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="3">
+                                                <TextBlock x:Name="MicCfgDropsText" Text="0" Style="{StaticResource ValueText}" />
+                                                <TextBlock Text="掉块" Style="{StaticResource MetricLabel}" />
+                                            </StackPanel>
+                                        </Grid>
+                                        <TextBlock x:Name="MicCfgHealthText" Style="{StaticResource HintText}"
+                                                   Text="引擎未运行；开始后这里显示实际采样率与延迟。" />
                                     </StackPanel>
-                                    <StackPanel Grid.Row="1">
-                                        <TextBlock x:Name="MicBufferText" Text="—" Style="{StaticResource ValueText}" />
-                                        <TextBlock Text="缓冲" Style="{StaticResource MetricLabel}" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Row="1" Grid.Column="1">
-                                        <TextBlock x:Name="MicPacketsText" Text="0" Style="{StaticResource ValueText}" />
-                                        <TextBlock Text="接收包数" Style="{StaticResource MetricLabel}" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Row="1" Grid.Column="2">
-                                        <TextBlock x:Name="MicDropText" Text="0" Style="{StaticResource ValueText}" />
-                                        <TextBlock Text="丢包 / 溢出" Style="{StaticResource MetricLabel}" />
-                                    </StackPanel>
-                                </Grid>
-                                <ProgressBar x:Name="MicLevelBar" Height="6" Maximum="100" Value="0" />
-                                <TextBlock x:Name="MicDeviceText" Style="{StaticResource HintText}"
-                                           Text="等待手机连接…" />
+                                </Border>
+
+                                <Border Style="{StaticResource CardStyle}">
+                                    <Grid ColumnSpacing="12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Spacing="4">
+                                            <TextBlock Text="手机也能当麦克风" Style="{StaticResource SectionTitle}" />
+                                            <TextBlock Style="{StaticResource HintText}"
+                                                       Text="没有声卡或想离开桌面走动时，把手机接进来：同一页切到「手机麦克风」，扫码配对即可，处理链路完全一样。" />
+                                        </StackPanel>
+                                        <Button Grid.Column="1" Content="切换到手机麦克风" Click="MicGoMobile_Click"
+                                                VerticalAlignment="Center" />
+                                    </Grid>
+                                </Border>
                             </StackPanel>
-                        </Border>
-
-                        <Border Style="{StaticResource CardStyle}">
-                            <StackPanel Spacing="6">
-                                <TextBlock Text="细节调节" Style="{StaticResource SectionTitle}" />
-                                <TextBlock Style="{StaticResource HintText}"
-                                           Text="作用于手机送来的音频，改完立即生效；手机 App 里也能调同一组参数。" />
-
-                                <Grid ColumnSpacing="10" Margin="0,8,0,0">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="110" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="66" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Text="输入增益" VerticalAlignment="Center" />
-                                    <Slider x:Name="MicGainSlider" Grid.Column="1" ValueChanged="MicSlider_Changed" />
-                                    <TextBlock x:Name="MicGainValue" Grid.Column="2" HorizontalAlignment="Right"
-                                               Style="{StaticResource ValueText}" />
-                                </Grid>
-
-                                <Grid ColumnSpacing="10">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="110" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="66" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Text="高通" VerticalAlignment="Center" />
-                                    <Slider x:Name="MicHpfSlider" Grid.Column="1" ValueChanged="MicSlider_Changed" />
-                                    <TextBlock x:Name="MicHpfValue" Grid.Column="2" HorizontalAlignment="Right"
-                                               Style="{StaticResource ValueText}" />
-                                </Grid>
-
-                                <Grid ColumnSpacing="10">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="110" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="66" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Text="噪声门" VerticalAlignment="Center" />
-                                    <Slider x:Name="MicGateSlider" Grid.Column="1" ValueChanged="MicSlider_Changed" />
-                                    <TextBlock x:Name="MicGateValue" Grid.Column="2" HorizontalAlignment="Right"
-                                               Style="{StaticResource ValueText}" />
-                                </Grid>
-
-                                <Grid ColumnSpacing="10">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="110" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="66" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Text="抖动缓冲" VerticalAlignment="Center" />
-                                    <Slider x:Name="MicJitterSlider" Grid.Column="1" ValueChanged="MicSlider_Changed" />
-                                    <TextBlock x:Name="MicJitterValue" Grid.Column="2" HorizontalAlignment="Right"
-                                               Style="{StaticResource ValueText}" />
-                                </Grid>
-                            </StackPanel>
-                        </Border>
-
-                        <Border Style="{StaticResource CardStyle}">
-                            <StackPanel Spacing="8">
-                                <TextBlock Text="输入源" Style="{StaticResource SectionTitle}" />
-                                <RadioButton x:Name="MicSourceDevice" GroupName="micSource"
-                                             Content="电脑声卡输入（默认）" Checked="MicSource_Changed" />
-                                <RadioButton x:Name="MicSourceMobile" GroupName="micSource"
-                                             Content="手机麦克风（Wi-Fi）" Checked="MicSource_Changed" />
-                                <TextBlock Style="{StaticResource HintText}"
-                                           Text="切换输入源后，回到「主控」页重新开始，才会用新的输入。" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Style="{StaticResource CardStyle}">
-                            <StackPanel Spacing="6">
-                                <TextBlock Text="三步上手" Style="{StaticResource SectionTitle}" />
-                                <TextBlock Style="{StaticResource HintText}"
-                                           Text="1. 点「启动服务」，记下电脑地址与 PIN。" />
-                                <TextBlock Style="{StaticResource HintText}"
-                                           Text="2. 手机上安装 Intro Voice Mic，扫码或手填地址和 PIN，点连接。" />
-                                <TextBlock Style="{StaticResource HintText}"
-                                           Text="3. 把输入源切到手机麦克风，回「主控」页开始；手机锁屏也能继续推流。" />
-                            </StackPanel>
-                        </Border>
-                    </StackPanel>
-                </ScrollViewer>
+                        </ScrollViewer>
+                    </Grid>
+                </Grid>
             </Grid>
 
             <!-- 插件市场 -->

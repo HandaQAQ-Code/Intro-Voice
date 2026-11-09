@@ -73,6 +73,8 @@ public sealed partial class MainWindow : Window
     private bool _micPolling;
     private bool _micSyncing;
     private string _micQrKey = "";
+    private string _micSource = "device";
+    private DateTime _micSourcePushedAt = DateTime.MinValue;
 
     public MainWindow()
     {
@@ -191,6 +193,7 @@ public sealed partial class MainWindow : Window
         _micSettingTimer.Tick += FlushMicSettings;
 
         ApplyWorkshopMode();
+        SetMicSource("device", false);
         Nav.SizeChanged += (_, _) => UpdatePageHeights();
         Closed += OnClosed;
         App.Trace("mainwindow: ctor end");
@@ -254,7 +257,7 @@ public sealed partial class MainWindow : Window
             await RefreshPresets();
             App.Trace("connect: presets refreshed");
             _connected = true;
-            if (PageMobileMic.Visibility == Visibility.Visible)
+            if (PageMicConfig.Visibility == Visibility.Visible)
                 _ = RefreshMicStatusAsync(true);
             StatusDot.Fill = new SolidColorBrush(Color.FromArgb(255, 76, 201, 116));
             ServiceText.Text = notice;
@@ -769,7 +772,7 @@ public sealed partial class MainWindow : Window
         var pages = new (string Tag, Grid Page)[]
         {
             ("live", PageLive), ("fx", PageFx), ("workshop", PageWorkshop),
-            ("mobile", PageMobileMic), ("plugins", PagePlugins), ("market", PageMarket),
+            ("mic", PageMicConfig), ("plugins", PagePlugins), ("market", PageMarket),
             ("help", PageHelp),
         };
         foreach (var (pageTag, page) in pages)
@@ -787,8 +790,12 @@ public sealed partial class MainWindow : Window
             _ = LoadMarketAsync(false);
         if (tag == "workshop" && _workshop.Count == 0)
             _ = LoadWorkshopAsync();
-        if (tag == "mobile")
+        if (tag == "mic")
+        {
+            UpdateMicDeviceName();
+            UpdateMicSourceHints();
             _ = RefreshMicStatusAsync(true);
+        }
     }
 
     /// <summary>切页时把内容滚回顶部，避免沿用上一页的滚动位置。</summary>
@@ -1425,7 +1432,7 @@ def process(x, sr, params):
     private async void PollMic(object? sender, object args)
     {
         if (!_connected || _busy || _micPolling) return;
-        if (PageMobileMic.Visibility != Visibility.Visible) return;
+        if (PageMicConfig.Visibility != Visibility.Visible) return;
         await RefreshMicStatusAsync(false);
     }
 
@@ -1500,6 +1507,25 @@ def process(x, sr, params):
             MicDropText.Text = $"{underruns:0}/{overflows:0}";
             MicLevelBar.Value = Math.Clamp((level + 60.0) / 60.0 * 100.0, 0, 100);
 
+            double inDb = Num(status, "inputDb", -90);
+            bool hasLevel = running && inDb > -89.5;
+            MicCfgLevelText.Text = hasLevel ? $"{inDb:0.0} dB" : "—";
+            MicCfgLevelBar.Value = Math.Clamp((inDb + 60.0) / 60.0 * 100.0, 0, 100);
+
+            int inRate = (int)Num(status, "inputRate", 0);
+            int outRate = (int)Num(status, "outputRate", 0);
+            double latencyMs = Num(status, "latencyMs", 0);
+            double drops = Num(status, "drops", 0);
+            MicCfgInRateText.Text = inRate > 0 ? $"{inRate / 1000.0:0.#} kHz" : "—";
+            MicCfgOutRateText.Text = outRate > 0 ? $"{outRate / 1000.0:0.#} kHz" : "—";
+            MicCfgLatencyText.Text = running ? $"{latencyMs:0} ms" : "—";
+            MicCfgDropsText.Text = $"{drops:0}";
+            MicCfgHealthText.Text = running
+                ? drops > 0
+                    ? "有掉块：把超分延迟模式调高一档，或先减掉几个插件。"
+                    : "链路稳定，没有掉块。"
+                : "引擎未运行；开始后这里显示实际采样率与延迟。";
+
             string client = Str(mic, "client");
             MicDeviceText.Text = client.Length > 0
                 ? $"正在接收：{client} · 手机端 {rate} Hz"
@@ -1509,11 +1535,10 @@ def process(x, sr, params):
         if (status.TryGetProperty("inputSource", out var src)
             && src.ValueKind == JsonValueKind.String)
         {
-            _micSyncing = true;
-            bool mobile = src.GetString() == "mobile";
-            MicSourceMobile.IsChecked = mobile;
-            MicSourceDevice.IsChecked = !mobile;
-            _micSyncing = false;
+            string source = src.GetString() ?? "";
+            // 刚在界面点过来源时，等 push 落地再以服务端为准，避免被上一轮状态拉回。
+            if (source.Length > 0 && (DateTime.UtcNow - _micSourcePushedAt).TotalSeconds > 2.5)
+                SetMicSource(source, false);
         }
 
         // 只在进入页面 / 启动服务时同步滑块，避免和拖动打架。
@@ -1652,22 +1677,103 @@ def process(x, sr, params):
         }
     }
 
-    private async void MicSource_Changed(object sender, RoutedEventArgs e)
+    // ------------------------------------------------------------------
+    // 麦克风配置：来源切换（电脑声卡 / 手机麦克风）
+    // ------------------------------------------------------------------
+    private void MicSourceToggle_Click(object sender, RoutedEventArgs e)
     {
-        if (_micSyncing || !_connected) return;
-        string source = MicSourceMobile.IsChecked == true ? "mobile" : "device";
+        if (_micSyncing) return;
+        SetMicSource(ReferenceEquals(sender, MicSrcMobileToggle) ? "mobile" : "device", true);
+    }
+
+    private void MicGoLive_Click(object sender, RoutedEventArgs e) => GoToPage("live");
+
+    private void MicGoMobile_Click(object sender, RoutedEventArgs e)
+        => SetMicSource("mobile", true);
+
+    private async void MicRefreshDevices_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_connected) return;
+        SetBusy(true, "正在重新枚举音频设备…");
         try
         {
-            await _client.CallAsync("set_options",
-                new JsonObject { ["inputSource"] = source }, 8000);
-            MicDeviceText.Text = source == "mobile"
-                ? "输入源已切到手机麦克风；回「主控」页重新开始即可生效。"
-                : "输入源已切回电脑声卡；回「主控」页重新开始即可生效。";
+            ApplyDevices(await _client.CallAsync("devices"));
+            UpdateMicDeviceName();
         }
         catch (Exception ex)
         {
             ShowError(ex.Message);
         }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
+    /// <summary>切换输入来源并同步两套视图；push 为真时把选择写回服务端。</summary>
+    private void SetMicSource(string source, bool push)
+    {
+        _micSource = string.Equals(source, "mobile", StringComparison.OrdinalIgnoreCase)
+            ? "mobile" : "device";
+        _micSyncing = true;
+        MicSrcMobileToggle.IsChecked = _micSource == "mobile";
+        MicSrcDeviceToggle.IsChecked = _micSource == "device";
+        _micSyncing = false;
+
+        bool mobile = _micSource == "mobile";
+        MicMobileView.Visibility = mobile ? Visibility.Visible : Visibility.Collapsed;
+        MicDeviceView.Visibility = mobile ? Visibility.Collapsed : Visibility.Visible;
+        UpdateMicDeviceName();
+        UpdateMicSourceHints();
+        if (push) _ = PushMicSourceAsync(_micSource);
+    }
+
+    private async Task PushMicSourceAsync(string source)
+    {
+        if (!_connected) return;
+        try
+        {
+            await _client.CallAsync("set_options",
+                new JsonObject { ["inputSource"] = source }, 8000);
+            _micSourcePushedAt = DateTime.UtcNow;
+            MicDeviceText.Text = source == "mobile"
+                ? "输入源已切到手机麦克风；回「主控」页重新开始即可生效。"
+                : "输入源已切回电脑声卡；回「主控」页重新开始即可生效。";
+            UpdateMicSourceHints();
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+        }
+    }
+
+    private void UpdateMicDeviceName()
+    {
+        var device = InputCombo.SelectedItem as DeviceItem;
+        MicDeviceNameText.Text = device?.Label ?? "未选择设备";
+    }
+
+    private void UpdateMicSourceHints()
+    {
+        MicDeviceRunText.Text = _micSource == "mobile"
+            ? "当前设置走手机麦克风；切回电脑声卡后会沿用主控页选好的设备。"
+            : _micRunning
+                ? "链路正在运行，输入来自电脑声卡。改过设备后回主控页重新开始即可。"
+                : "链路未运行：到主控页选好设备并点开始，这里才有的可看。";
+    }
+
+    /// <summary>按导航项定位页面，同时更新侧边栏选中态。</summary>
+    private void GoToPage(string tag)
+    {
+        foreach (var item in Nav.MenuItems)
+        {
+            if (item is NavigationViewItem navItem && (navItem.Tag as string) == tag)
+            {
+                Nav.SelectedItem = navItem;
+                return;
+            }
+        }
+        ShowPage(tag);
     }
 
     private static async Task<ImageSource?> Base64ImageAsync(string base64)
