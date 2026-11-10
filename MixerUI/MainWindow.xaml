@@ -124,8 +124,21 @@
             </NavigationView.MenuItems>
 
             <NavigationView.PaneFooter>
-                <TextBlock Text="Intro Voice 1.0.0" FontSize="11" Margin="6,0,0,8"
-                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                <StackPanel Spacing="6" Margin="4,0,4,8">
+                    <Button Content="新手教程" Click="Tutorial_Click"
+                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Left">
+                        <Button.ContentTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <FontIcon Glyph="&#xE897;" FontSize="14" />
+                                    <TextBlock Text="新手教程" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </Button.ContentTemplate>
+                    </Button>
+                    <TextBlock Text="Intro Voice 1.0.0" FontSize="11" Margin="2,0,0,0"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                </StackPanel>
             </NavigationView.PaneFooter>
 
             <Grid x:Name="PagesRoot">

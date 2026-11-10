@@ -1083,9 +1083,10 @@ class Service:
     # -- helpers -----------------------------------------------------------
     def _load_settings(self) -> dict:
         defaults = {"input": "", "output": "", "inputSource": "device",
+                    "inputDevice": -1, "outputDevice": -1,
                     "aiMode": "off", "denoise": False,
                     "gainDb": 0.0, "floorDb": -55.0, "srStrength": 0.7, "latencyMode": "balanced",
-                    "pythonPath": "", "checkUpdates": True,
+                    "pythonPath": "", "checkUpdates": True, "tutorialSeen": False,
                     "dsp": dsp_default_params(),
                     "workshop": {"order": [], "enabled": {}, "params": {}},
                     "mobileMic": {"gainDb": 0.0, "hpfHz": 80.0, "gateDb": -62.0,
@@ -1180,9 +1181,14 @@ class Service:
             pass
         if not cable:
             cable = next((o["label"] for o in outputs if o["host"] == "Windows WASAPI"), "")
+        # 虚拟声卡探测偶发失败（PortAudio 状态异常）不能拖垮整个设备列表。
+        try:
+            virtual = virtual_device.detect(devices=raw_devices, hosts=hosts)
+        except Exception as exc:
+            LOG.warning("虚拟声卡检测失败：%s", exc)
+            virtual = {"installed": bool(cable), "render": None, "capture": None}
         return {"inputs": inputs, "outputs": outputs, "cableOutput": cable,
-                "inputDefault": default_input,
-                "virtual": virtual_device.detect(devices=raw_devices, hosts=hosts)}
+                "inputDefault": default_input, "virtual": virtual}
 
     def _drain_events(self) -> None:
         while True:
@@ -1327,12 +1333,98 @@ class Service:
         path = str(self.settings.get("pythonPath") or "").strip()
         return path if path and Path(path).is_file() else None
 
+    # -- 新手引导：状态检测 + 一键配置 -------------------------------------
+    def cmd_guide_status(self, request):
+        """给新手引导用的实时配置状态：设备、引擎、音质档、声纹、虚拟声卡。"""
+        sys_ok = True
+        devices: dict = {}
+        try:
+            devices = self._devices()
+        except Exception as exc:
+            sys_ok = False
+            LOG.warning("引导：设备枚举失败 %s", exc)
+        settings = self.settings
+        in_id = int(settings.get("inputDevice", -1))
+        out_id = int(settings.get("outputDevice", -1))
+
+        def label_of(items, target):
+            for item in items:
+                if item["id"] == target:
+                    return item["label"]
+            return ""
+
+        in_label = label_of(devices.get("inputs") or [], in_id)
+        out_label = label_of(devices.get("outputs") or [], out_id)
+        out_is_cable = False
+        if out_id >= 0:
+            try:
+                name = sd.query_devices(out_id)["name"].lower()
+                out_is_cable = ("cable input" in name
+                                or "vb-audio virtual cable" in name)
+            except Exception:
+                out_is_cable = False
+        virtual = devices.get("virtual") or {}
+        from live_voice import PROFILE
+        gpu_ok, _gpu_note = gpu_capability()
+        return {
+            "devicesOk": sys_ok,
+            "inputDevice": in_id,
+            "inputLabel": in_label,
+            "inputReady": in_id >= 0 and bool(in_label),
+            "outputDevice": out_id,
+            "outputLabel": out_label,
+            "outputReady": out_is_cable,
+            # cableOutput 有值就说明 CABLE Input 端点存在，比 virtual.installed 更稳。
+            "virtualInstalled": bool(virtual.get("installed"))
+                                or bool(devices.get("cableOutput")),
+            "cableInLabel": devices.get("cableOutput") or "",
+            "suggestInputLabel": devices.get("inputDefault") or "",
+            "engineRunning": bool(self.engine and self.engine.thread
+                                  and self.engine.thread.is_alive()),
+            "aiMode": str(settings.get("aiMode", "off")),
+            "gpuAvailable": gpu_ok,
+            "voiceReady": PROFILE.is_file(),
+            "workshopCount": len(self._workshop_slugs() or []),
+        }
+
+    def cmd_guide_auto_devices(self, request):
+        """一键自动选好输入（系统默认麦克风）与输出（CABLE Input）。"""
+        devices = self._devices()
+        in_label = devices.get("inputDefault") or ""
+        out_label = devices.get("cableOutput") or ""
+        if not out_label:
+            virtual = devices.get("virtual") or {}
+            raise RuntimeError(
+                "没有检测到 CABLE Input。请先安装 VB-CABLE 虚拟声卡"
+                + ("（可在「麦克风配置」页一键获取）" if not virtual.get("installed") else "")
+                + "，装完重启本程序。")
+        in_id = next((d["id"] for d in devices["inputs"] if d["label"] == in_label), -1)
+        out_id = next((d["id"] for d in devices["outputs"] if d["label"] == out_label), -1)
+        if in_id < 0:
+            raise RuntimeError("没有找到可用的麦克风输入设备，请检查系统录音设备。")
+        self.settings.update({
+            "inputSource": "device",
+            "inputDevice": in_id,
+            "outputDevice": out_id,
+            "input": in_label,
+            "output": out_label,
+        })
+        self._save_settings()
+        return self.cmd_guide_status(request)
+
+    def _workshop_slugs(self) -> list[str]:
+        try:
+            return [p["slug"] for p in workshop_service.list_plugins(ROOT)]
+        except Exception:
+            return []
+
     def cmd_settings_get(self, request):
         """读应用级设置，立即返回（不做 Python 扫描，避免设置页卡住）。"""
         pref = gpu_install.read_native_preference(ROOT)
         return {
             "pythonPath": str(self.settings.get("pythonPath") or ""),
             "checkUpdates": bool(self.settings.get("checkUpdates", True)),
+            "tutorialSeen": bool(self.settings.get("tutorialSeen", False)),
             "pythonDetected": pref,
             "pythons": [],
             "pythonCount": 0,
@@ -1362,6 +1454,9 @@ class Service:
             changed = True
         if "checkUpdates" in request:
             self.settings["checkUpdates"] = bool(request["checkUpdates"])
+            changed = True
+        if "tutorialSeen" in request:
+            self.settings["tutorialSeen"] = bool(request["tutorialSeen"])
             changed = True
         if "mobilePort" in request:
             port = int(request["mobilePort"])
@@ -1478,8 +1573,10 @@ class Service:
     def _start_config(self, request, settings: dict) -> dict:
         source = str(request.get("inputSource", settings.get("inputSource", "device")))
         cfg = {"inputSource": source,
-               "inputDevice": int(request.get("inputDevice", -1)),
-               "outputDevice": int(request.get("outputDevice", -1)),
+               "inputDevice": int(request.get("inputDevice",
+                                              settings.get("inputDevice", -1))),
+               "outputDevice": int(request.get("outputDevice",
+                                               settings.get("outputDevice", -1))),
                "aiMode": str(request.get("aiMode", settings.get("aiMode", "off"))),
                "denoise": bool(request.get("denoise", settings.get("denoise", False))),
                "gainDb": float(request.get("gainDb", settings.get("gainDb", 0.0))),
