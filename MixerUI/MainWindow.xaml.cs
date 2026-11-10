@@ -491,17 +491,14 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        // 优先展示「复用本机 Python 环境」：原生通过就直接用原电脑的，不下载。
-        GpuUseNativeButton.Visibility = _gpuNativeAvailable
-            ? Visibility.Visible : Visibility.Collapsed;
-        GpuDownloadButton.Visibility = Visibility.Visible;
+        // 已检测到本机可用的 CUDA torch：服务端会自动复用它，这里只做说明，不再引导下载。
+        GpuUseNativeButton.Visibility = Visibility.Collapsed;
+        GpuDownloadButton.Visibility = Visibility.Collapsed;
         GpuDownloadHint.Visibility = Visibility.Visible;
-
         if (_gpuNativeAvailable)
         {
-            GpuDownloadHint.Text = "检测到本机 Python 已装好 CUDA 版 PyTorch（"
-                + _gpuNativeNote + "）。优先推荐点「使用本机 Python 环境」直接复用，无需下载；"
-                + "也可点「下载 GPU 支持」装到本程序自己的目录。";
+            GpuDownloadHint.Text = "已自动复用本机 Python 环境（" + _gpuNativeNote
+                + "），无需下载。若重启后仍不可用，可到「设置 → Python 环境」里手动指定解释器。";
         }
         else if (_gpuInstalled)
         {
@@ -509,8 +506,10 @@ public sealed partial class MainWindow : Window
         }
         else
         {
-            GpuDownloadHint.Text = "GPU 档需要 CUDA 版 PyTorch（约 2.5 GB）。本机没有现成环境，"
-                + "点「下载 GPU 支持」按需安装，用于给主包瘦身。";
+            // 真正没有任何可用环境时，才引导下载。
+            GpuDownloadButton.Visibility = Visibility.Visible;
+            GpuDownloadHint.Text = "GPU 档需要 CUDA 版 PyTorch（约 2.5 GB）。本机未找到现成环境，"
+                + "可点「下载 GPU 支持」按需安装；也可以到「设置 → Python 环境」手动指定已装好的 Python。";
         }
     }
 
@@ -2304,12 +2303,61 @@ def process(x, sr, params):
             if (port >= 1024 && port <= 65535) SettingsMicPort.Value = port;
             _suppressSettings = false;
             UpdatePythonStatus(result);
+            await LoadVoiceInfoAsync();
+            // Python 扫描要起子进程，较慢：单独异步加载，不阻塞设置页展示。
+            _ = ScanPythonAsync();
         }
         catch (Exception ex)
         {
             _suppressSettings = false;
             SettingsPythonStatus.Text = "加载设置失败：" + ex.Message;
         }
+    }
+
+    /// <summary>异步扫描本机所有 Python（较慢），单独更新列表与状态。</summary>
+    private async Task ScanPythonAsync(bool force = false)
+    {
+        if (!_connected) return;
+        try
+        {
+            var args = new JsonObject { ["force"] = force };
+            var result = await _client.CallAsync("settings_scan_python", args, 180000);
+            UpdatePythonStatus(result);
+            ApplyPythonList(result);
+        }
+        catch (Exception ex)
+        {
+            SettingsPythonStatus.Text = "Python 扫描失败：" + ex.Message;
+        }
+    }
+
+    /// <summary>把自动搜索到的 Python 列表填进设置页。</summary>
+    private void ApplyPythonList(JsonElement result)
+    {
+        var items = new List<PythonEntry>();
+        if (result.TryGetProperty("pythons", out var arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in arr.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                bool compatible = Bool(item, "compatible");
+                bool cuda = Bool(item, "cuda");
+                string ver = Str(item, "version");
+                string path = Str(item, "python");
+                string state = cuda ? "✓ 可用（CUDA）"
+                    : compatible ? "未装 CUDA torch"
+                    : "版本不兼容（需 3.11）";
+                items.Add(new PythonEntry
+                {
+                    Version = ver.Length > 0 ? ver : "?",
+                    Path = path,
+                    State = state,
+                    Usable = cuda,
+                });
+            }
+        }
+        SettingsPythonList.ItemsSource = items;
+        SettingsPythonListPanel.Visibility = items.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void UpdatePythonStatus(JsonElement result)
@@ -2329,8 +2377,8 @@ def process(x, sr, params):
             else
             {
                 SettingsPythonStatus.Text = cuda
-                    ? $"✓ 自动检测到本机 Python，torch {ver} 且 CUDA 可用。"
-                    : "自动检测：本机未找到带 CUDA 的 torch，可手动指定 Python 路径。";
+                    ? $"✓ 自动搜索到本机 Python，torch {ver} 且 CUDA 可用，已直接复用（无需下载）。"
+                    : "自动搜索：本机未找到带 CUDA 的 torch，可在下方列表里指定其他 Python，或点「下载 GPU 支持」。";
             }
         }
         else
@@ -2353,6 +2401,7 @@ def process(x, sr, params):
             SettingsPythonPath.Text = Str(result, "pythonPath");
             _suppressSettings = false;
             UpdatePythonStatus(result);
+            await ScanPythonAsync(force: true);
         }
         catch (Exception ex)
         {
@@ -2396,6 +2445,133 @@ def process(x, sr, params):
         catch (Exception ex)
         {
             ShowError(ex.Message);
+        }
+    }
+
+    private async void SettingsPythonRescan_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_connected) return;
+        SettingsPythonStatus.Text = "正在重新扫描本机所有 Python…";
+        await ScanPythonAsync(force: true);
+    }
+
+    // -- AI 声纹录制 ---------------------------------------------------
+    private bool _voiceRecording;
+    private DispatcherQueueTimer? _voiceTimer;
+
+    private async Task LoadVoiceInfoAsync()
+    {
+        if (!_connected) return;
+        try
+        {
+            var info = await _client.CallAsync("voice_info", null, 15000);
+            bool exists = Bool(info, "exists");
+            double seconds = Num(info, "seconds", 0);
+            SettingsVoiceInfo.Text = exists
+                ? $"当前声纹：{seconds:0.0} 秒 · {Num(info, "sizeMb", 0):0.00} MB（重新录制会覆盖，旧文件自动备份为 target.wav.bak）"
+                : "当前还没有声纹文件，录一段就能启用 AI 档。";
+        }
+        catch (Exception ex)
+        {
+            SettingsVoiceInfo.Text = "读取声纹信息失败：" + ex.Message;
+        }
+    }
+
+    private async void VoiceRecord_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_connected) return;
+        if (_voiceRecording)
+        {
+            // 再点一次 = 取消
+            try { await _client.CallAsync("voice_record_cancel", null, 8000); } catch { }
+            StopVoiceTimer();
+            _voiceRecording = false;
+            VoiceRecordButton.Content = "开始录制";
+            VoiceRecordStatus.Text = "已取消。";
+            return;
+        }
+
+        VoiceRecordButton.IsEnabled = false;
+        VoiceRecordStatus.Text = "正在准备麦克风…";
+        try
+        {
+            var start = await _client.CallAsync("voice_record_start",
+                new JsonObject { ["seconds"] = 6.0 }, 20000);
+            if (Str(start, "error").Length > 0 && !Bool(start, "recording"))
+            {
+                VoiceRecordStatus.Text = "无法开始录制：" + Str(start, "error");
+                VoiceRecordButton.IsEnabled = true;
+                return;
+            }
+            _voiceRecording = true;
+            VoiceRecordButton.Content = "取消录制";
+            VoiceRecordButton.IsEnabled = true;
+            StartVoiceTimer();
+        }
+        catch (Exception ex)
+        {
+            VoiceRecordStatus.Text = "无法开始录制：" + ex.Message;
+            VoiceRecordButton.IsEnabled = true;
+        }
+    }
+
+    private void StartVoiceTimer()
+    {
+        _voiceTimer ??= DispatcherQueue.CreateTimer();
+        _voiceTimer.Interval = TimeSpan.FromMilliseconds(200);
+        _voiceTimer.IsRepeating = true;
+        _voiceTimer.Tick -= VoiceTimer_Tick;
+        _voiceTimer.Tick += VoiceTimer_Tick;
+        _voiceTimer.Start();
+    }
+
+    private void StopVoiceTimer()
+    {
+        if (_voiceTimer is not null) _voiceTimer.Stop();
+    }
+
+    private async void VoiceTimer_Tick(DispatcherQueueTimer sender, object args)
+    {
+        if (!_connected) { StopVoiceTimer(); return; }
+        try
+        {
+            var st = await _client.CallAsync("voice_record_status", null, 8000);
+            bool recording = Bool(st, "recording");
+            bool done = Bool(st, "done");
+            string err = Str(st, "error");
+            double elapsed = Num(st, "elapsed", 0);
+            double seconds = Num(st, "seconds", 6);
+            double level = Num(st, "levelDb", -90);
+            string msg = Str(st, "message");
+
+            VoiceRecordProgress.Value = seconds > 0 ? Math.Clamp(elapsed / seconds * 100, 0, 100) : 0;
+            VoiceRecordLevel.Text = level <= -89 ? "—" : $"{level:0} dB";
+
+            if (recording)
+            {
+                VoiceRecordStatus.Text = msg.Length > 0 ? msg : $"录制中… {elapsed:0.0} / {seconds:0.0} 秒";
+                return;
+            }
+
+            // 结束（成功或失败）
+            StopVoiceTimer();
+            _voiceRecording = false;
+            VoiceRecordButton.Content = "开始录制";
+            if (done)
+            {
+                VoiceRecordStatus.Text = "✓ 声纹已保存，AI 档现在可用。";
+                await LoadVoiceInfoAsync();
+            }
+            else
+            {
+                VoiceRecordStatus.Text = err.Length > 0 ? "录制失败：" + err : "录制已结束。";
+            }
+        }
+        catch
+        {
+            StopVoiceTimer();
+            _voiceRecording = false;
+            VoiceRecordButton.Content = "开始录制";
         }
     }
 

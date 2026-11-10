@@ -39,7 +39,7 @@ DLL_PATH = ROOT / "native" / "bin" / "vst3host.dll"
 LOG = logging.getLogger("mixer_service")
 
 # GPU 档的 CUDA PyTorch 支持有两种来源，按优先级在启动时接入 sys.path：
-#   1. 本机原生 Python 3.11 已装好 CUDA torch → 复用其 site-packages（优先，无需下载）；
+#   1. 本机已有可用的 CUDA torch（自动搜索所有 Python，找到就直接复用，不下载）；
 #   2. 用户点「下载」装到 gpu_packages/ → 复用该目录。
 # 两种都不随主包分发，用于瘦身。
 GPU_PACKAGES_DIR = ROOT / "gpu_packages"
@@ -1076,6 +1076,9 @@ class Service:
         self.scan_cache: list[dict] = []
         self.running = False
         self.progress: dict | None = None
+        # 声纹录制状态（软件内直接录制，替代 tools\录制声纹.bat）
+        self._voice_rec: dict | None = None
+        self._voice_rec_lock = threading.Lock()
 
     # -- helpers -----------------------------------------------------------
     def _load_settings(self) -> dict:
@@ -1261,8 +1264,13 @@ class Service:
     def cmd_hello(self, request):
         devices = self._devices()
         plugins = self._plugins()
+        # 自动复用本机已装好的 CUDA torch：有就直接用，不让用户重复下载。
+        reused = gpu_install.auto_enable_native(ROOT, self._preferred_python())
         gpu_ok, gpu_note = gpu_capability()
         gpu_status = gpu_install.read_status(ROOT)
+        gpu_status["native"] = reused
+        gpu_status["available"] = gpu_ok
+        gpu_status["note"] = gpu_note
         return {"version": 1, "protocol": PROTOCOL_VERSION, "presetVersion": PRESET_VERSION,
                 "devices": devices, "settings": self.settings,
                 "plugins": plugins, "running": self.engine.thread.is_alive() if self.engine and self.engine.thread else False,
@@ -1284,28 +1292,27 @@ class Service:
         return virtual_device.open_download()
 
     def cmd_gpu_status(self, request):
+        # 先尝试自动复用本机已有的 CUDA torch：检测到就直接用，不要求用户点按钮、更不提示下载。
+        preferred = self._preferred_python()
+        reused = gpu_install.auto_enable_native(ROOT, preferred)
         status = gpu_install.read_status(ROOT)
         gpu_ok, gpu_note = gpu_capability()
         status["available"] = gpu_ok
         status["note"] = gpu_note
-        # 附带本机原生环境检测结果，供界面展示「复用本机 / 下载」选项。
-        preferred = self._preferred_python()
-        native = gpu_install.detect_native_torch(ROOT, preferred)
-        status["native"] = native
-        status["nativeEnabled"] = gpu_install.read_native_preference(ROOT) is not None
+        status["native"] = reused
+        status["nativeEnabled"] = reused is not None
         return status
 
     def cmd_gpu_install(self, request):
         return gpu_install.start_install(ROOT, self._preferred_python())
 
     def cmd_gpu_use_native(self, request):
-        """优先复用本机原生 Python 3.11 已装好的 CUDA torch，不下载。"""
+        """手动触发复用本机 Python（设置页「立即检测」用）。"""
         native = gpu_install.detect_native_torch(ROOT, self._preferred_python())
         if native is None:
             return {"ok": False, "error": "未在本机检测到可用的 CUDA 版 PyTorch（需 Python 3.11 + torch + NVIDIA CUDA）。"}
         gpu_install.set_native_preference(ROOT, True, native)
         gpu_install.apply_native_to_syspath(ROOT)
-        # 立即重新评估能力（此时 site-packages 已加入 sys.path）。
         gpu_ok, gpu_note = gpu_capability()
         return {"ok": True, "native": native, "available": gpu_ok, "note": gpu_note,
                 "restart": not gpu_ok}
@@ -1321,14 +1328,27 @@ class Service:
         return path if path and Path(path).is_file() else None
 
     def cmd_settings_get(self, request):
-        """读应用级设置（Python 路径、更新检查等），供设置页展示。"""
-        preferred = self._preferred_python()
-        native = gpu_install.detect_native_torch(ROOT, preferred)
+        """读应用级设置，立即返回（不做 Python 扫描，避免设置页卡住）。"""
+        pref = gpu_install.read_native_preference(ROOT)
         return {
             "pythonPath": str(self.settings.get("pythonPath") or ""),
             "checkUpdates": bool(self.settings.get("checkUpdates", True)),
-            "pythonDetected": native,
+            "pythonDetected": pref,
+            "pythons": [],
+            "pythonCount": 0,
             "mobilePort": int(self.settings.get("mobileMic", {}).get("port", mobile_mic.DEFAULT_PORT)),
+        }
+
+    def cmd_settings_scan_python(self, request):
+        """扫描本机所有 Python 及其 CUDA torch 状态（较慢，带 5 分钟缓存）。"""
+        preferred = self._preferred_python()
+        force = bool(request.get("force"))
+        report = gpu_install.scan_native_report(ROOT, preferred, force=force)
+        return {
+            "pythonPath": str(self.settings.get("pythonPath") or ""),
+            "pythonDetected": report.get("usable"),
+            "pythons": report.get("pythons") or [],
+            "pythonCount": report.get("count", 0),
         }
 
     def cmd_settings_set(self, request):
@@ -1353,6 +1373,104 @@ class Service:
         if changed:
             self._save_settings()
         return self.cmd_settings_get(request)
+
+    # -- 声纹录制（软件内直接录，替代 tools\录制声纹.bat）--------------------
+    def cmd_voice_record_start(self, request):
+        """开始录制声纹：后台线程录 N 秒，实时更新电平；完成后校验并写入 data/target.wav。"""
+        with self._voice_rec_lock:
+            if self._voice_rec and self._voice_rec.get("recording"):
+                raise RuntimeError("正在录制中，请稍候")
+        if self.engine.thread and self.engine.thread.is_alive():
+            raise RuntimeError("链路正在运行，请先停止再录制声纹（麦克风被占用）")
+
+        seconds = float(request.get("seconds", 6.0))
+        seconds = max(3.0, min(30.0, seconds))
+        device = int(request.get("device", -1))
+        self._voice_rec = {
+            "recording": True, "done": False, "error": "",
+            "seconds": seconds, "elapsed": 0.0, "levelDb": -90.0,
+            "message": "准备录音…", "sampleRate": 16000,
+        }
+        thread = threading.Thread(target=self._run_voice_record,
+                                  args=(seconds, device), daemon=True)
+        thread.start()
+        return self.cmd_voice_record_status(request)
+
+    def _run_voice_record(self, seconds: float, device: int) -> None:
+        import numpy as np
+        rate = 16000
+        state = self._voice_rec
+        try:
+            if device < 0:
+                try:
+                    device = int(sd.default.device[0])
+                except Exception:
+                    device = -1
+            blocks: list = []
+            frame = int(rate * 0.05)  # 50 ms 一块，便于更新电平
+            total = int(rate * seconds)
+            got = 0
+            with sd.InputStream(samplerate=rate, channels=1, dtype="float32",
+                                device=device if device >= 0 else None,
+                                blocksize=frame) as stream:
+                if state is not None:
+                    state["message"] = "请开始朗读提示文字…"
+                while got < total:
+                    if state is not None and not state.get("recording"):
+                        return  # 用户取消
+                    chunk, overflowed = stream.read(frame)
+                    if chunk is None or len(chunk) == 0:
+                        continue
+                    mono = chunk[:, 0].copy()
+                    blocks.append(mono)
+                    got += len(mono)
+                    rms = float(np.sqrt(np.mean(np.square(mono)) + 1e-12))
+                    if state is not None:
+                        state["elapsed"] = min(seconds, got / rate)
+                        state["levelDb"] = 20.0 * float(np.log10(rms + 1e-9))
+            if not blocks:
+                raise RuntimeError("没有录到音频，请检查麦克风")
+            audio = np.concatenate(blocks).astype(np.float32)
+            from live_voice import save_sample
+            save_sample(audio)
+            if state is not None:
+                state.update({"recording": False, "done": True, "error": "",
+                              "elapsed": seconds, "message": "声纹已保存"})
+        except Exception as exc:
+            LOG.exception("声纹录制失败")
+            if state is not None:
+                state.update({"recording": False, "done": False,
+                              "error": str(exc), "message": "录制失败"})
+
+    def cmd_voice_record_status(self, request):
+        state = self._voice_rec
+        if not state:
+            return {"recording": False, "done": False, "error": "",
+                    "seconds": 6.0, "elapsed": 0.0, "levelDb": -90.0,
+                    "message": "尚未录制", "sampleRate": 16000}
+        return dict(state)
+
+    def cmd_voice_record_cancel(self, request):
+        state = self._voice_rec
+        if state and state.get("recording"):
+            state.update({"recording": False, "done": False,
+                          "error": "已取消", "message": "已取消"})
+        return self.cmd_voice_record_status(request)
+
+    def cmd_voice_info(self, request):
+        """返回当前声纹文件信息，供界面展示是否已有声纹。"""
+        from live_voice import PROFILE
+        info = {"path": str(PROFILE), "exists": PROFILE.is_file(),
+                "seconds": 0.0, "sizeMb": 0.0}
+        if PROFILE.is_file():
+            try:
+                import soundfile as sf
+                meta = sf.info(str(PROFILE))
+                info["seconds"] = float(meta.duration)
+                info["sizeMb"] = round(PROFILE.stat().st_size / 1024 / 1024, 2)
+            except Exception:
+                pass
+        return info
 
     def cmd_status(self, request):
         return self._status()

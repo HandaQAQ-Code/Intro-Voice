@@ -1725,19 +1725,73 @@
                             <StackPanel Spacing="10">
                                 <TextBlock Text="Python 环境" Style="{StaticResource SectionTitle}" />
                                 <TextBlock Style="{StaticResource HintText}" TextWrapping="Wrap"
-                                           Text="GPU 档需要 CUDA 版 PyTorch。默认自动检测本机 Python 3.11；检测不到时，可在这里手动指定 Python 解释器路径。" />
+                                           Text="GPU 档需要 CUDA 版 PyTorch。程序会自动搜索本机所有 Python，找到装好 CUDA torch 的就直接复用，不需要下载；也可以在这里手动指定解释器路径。" />
                                 <Grid ColumnSpacing="8">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBox x:Name="SettingsPythonPath" PlaceholderText="例如 C:\Users\你\AppData\Local\Programs\Python\Python311\python.exe" />
+                                    <TextBox x:Name="SettingsPythonPath" PlaceholderText="留空 = 自动搜索（例如 C:\...\Python311\python.exe）" />
                                     <Button Grid.Column="1" Content="浏览…" Click="SettingsPythonBrowse_Click" />
                                     <Button Grid.Column="2" Content="自动检测" Click="SettingsPythonDetect_Click" />
+                                    <Button Grid.Column="3" Content="重新扫描" Click="SettingsPythonRescan_Click" />
                                 </Grid>
                                 <TextBlock x:Name="SettingsPythonStatus" Style="{StaticResource HintText}" TextWrapping="Wrap"
                                            Text="尚未检测。" />
+                                <StackPanel x:Name="SettingsPythonListPanel" Spacing="4">
+                                    <TextBlock Text="本机找到的 Python" Style="{StaticResource MetricLabel}" />
+                                    <ItemsControl x:Name="SettingsPythonList">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid ColumnSpacing="8" Padding="0,3">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{Binding Version}" FontWeight="SemiBold"
+                                                               FontSize="12" VerticalAlignment="Center" />
+                                                    <TextBlock Grid.Column="1" Text="{Binding Path}" FontSize="11"
+                                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                               TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                                    <TextBlock Grid.Column="2" Text="{Binding State}" FontSize="11"
+                                                               VerticalAlignment="Center" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel Spacing="10">
+                                <TextBlock Text="AI 声纹" Style="{StaticResource SectionTitle}" />
+                                <TextBlock Style="{StaticResource HintText}" TextWrapping="Wrap"
+                                           Text="AI 档需要一段你自己的声纹（16 kHz、至少 3 秒有效人声）。在安静环境里对着麦克风连续朗读下面的文字，录完自动保存并可立即使用。" />
+                                <Border Style="{StaticResource InnerCardStyle}" Padding="12,10">
+                                    <TextBlock x:Name="VoicePromptText" TextWrapping="Wrap" FontSize="13"
+                                               Text="请朗读：「今天天气不错，我正在测试自己的麦克风效果，希望声音听起来清晰自然。」" />
+                                </Border>
+                                <TextBlock x:Name="SettingsVoiceInfo" Style="{StaticResource HintText}" TextWrapping="Wrap"
+                                           Text="正在读取当前声纹…" />
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Button x:Name="VoiceRecordButton" Content="开始录制"
+                                            Style="{StaticResource AccentButtonStyle}" Click="VoiceRecord_Click" />
+                                    <ProgressBar x:Name="VoiceRecordProgress" Grid.Column="1" Height="6"
+                                                 Minimum="0" Maximum="100" VerticalAlignment="Center" />
+                                    <TextBlock x:Name="VoiceRecordLevel" Grid.Column="2" Style="{StaticResource ValueText}"
+                                               Text="—" VerticalAlignment="Center" />
+                                </Grid>
+                                <TextBlock x:Name="VoiceRecordStatus" Style="{StaticResource HintText}" TextWrapping="Wrap"
+                                           Text="点「开始录制」，录满 6 秒自动保存。" />
                             </StackPanel>
                         </Border>
 

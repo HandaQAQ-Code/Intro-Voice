@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -154,8 +155,77 @@ def _python_matches(cand: str) -> tuple[str, str] | None:
     return None
 
 
-def _native_candidates(root: Path, preferred: str | None = None) -> list[str]:
-    """所有可能是 3.11 的候选解释器（与 find_python 同序，但不去重、全部返回）。"""
+def _py_launcher_pythons() -> list[str]:
+    """用 py launcher 列出所有已安装的 Python 解释器（最全的来源）。"""
+    out_paths: list[str] = []
+    try:
+        out = subprocess.run(["py", "-0p"], **_run_kwargs(timeout=10))
+    except (OSError, subprocess.SubprocessError):
+        return out_paths
+    for line in (out.stdout or "").splitlines():
+        # 形如： -V:3.11 *        C://...//Python311//python.exe
+        m = re.search(r"([A-Za-z]:\\.*?python(?:w)?\.exe)\s*$", line.strip(), re.IGNORECASE)
+        if m:
+            out_paths.append(m.group(1).strip())
+    return out_paths
+
+
+def _where_pythons() -> list[str]:
+    """PATH 里能直接找到的 python（where python / python3）。"""
+    out_paths: list[str] = []
+    for name in ("python", "python3"):
+        try:
+            out = subprocess.run(["where", name], **_run_kwargs(timeout=8))
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for line in (out.stdout or "").splitlines():
+            path = line.strip()
+            if path.lower().endswith("python.exe") and Path(path).is_file():
+                out_paths.append(path)
+    return out_paths
+
+
+def _common_dir_pythons() -> list[str]:
+    """扫描常见安装目录里所有 Python3XX。"""
+    out_paths: list[str] = []
+    local_apps = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python"
+    if local_apps.is_dir():
+        try:
+            for entry in local_apps.iterdir():
+                if entry.is_dir():
+                    exe = entry / "python.exe"
+                    if exe.is_file():
+                        out_paths.append(str(exe))
+        except OSError:
+            pass
+
+    roots: list[Path] = [Path("C:/")]
+    for env in ("PROGRAMFILES", "PROGRAMFILES(X86)"):
+        base = os.environ.get(env)
+        if base:
+            roots.append(Path(base))
+    for root in roots:
+        try:
+            for entry in root.iterdir():
+                if not entry.is_dir():
+                    continue
+                name = entry.name.lower().replace(" ", "")
+                if name.startswith("python3"):
+                    exe = entry / "python.exe"
+                    if exe.is_file():
+                        out_paths.append(str(exe))
+        except OSError:
+            continue
+    return out_paths
+
+
+def discover_pythons(root: Path, preferred: str | None = None) -> list[dict]:
+    """自动搜索本机所有 Python 解释器，返回 [{python, version, major, minor, compatible}]。
+
+    来源：用户指定路径 → 内置 runtime → py launcher 全部版本 → PATH →
+    %LOCALAPPDATA%\\Programs\\Python → C://// 与 Program Files 下的 Python3XX。
+    这是「处理多 Python 情况」的基础：把所有候选都列出来再逐个探测。
+    """
     candidates: list[str] = []
     if preferred and Path(preferred).is_file():
         candidates.append(preferred)
@@ -163,57 +233,129 @@ def _native_candidates(root: Path, preferred: str | None = None) -> list[str]:
         bundled = root / "runtime" / name
         if bundled.is_file():
             candidates.append(str(bundled))
-    candidates += ["py", "python", "python3"]
-    local = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python"
-    for ver in ("Python311", "Python312", "Python310"):
-        exe = local / ver / "python.exe"
-        if exe.is_file():
-            candidates.append(str(exe))
-    # 去重保持顺序
+    candidates += _py_launcher_pythons()
+    candidates += _where_pythons()
+    candidates += _common_dir_pythons()
+
     seen: set[str] = set()
-    out: list[str] = []
-    for c in candidates:
-        if c not in seen:
-            seen.add(c)
-            out.append(c)
-    return out
+    result: list[dict] = []
+    for cand in candidates:
+        key = cand.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if not Path(cand).is_file():
+            continue
+        try:
+            out = subprocess.run(
+                [cand, "-c",
+                 "import sys;print(f'{sys.version_info[0]}.{sys.version_info[1]}')"],
+                **_run_kwargs(timeout=12))
+        except (OSError, subprocess.SubprocessError):
+            continue
+        ver = (out.stdout or "").strip()
+        if "." not in ver:
+            continue
+        try:
+            major, minor = (int(x) for x in ver.split(".")[:2])
+        except ValueError:
+            continue
+        result.append({"python": cand, "version": ver,
+                       "major": major, "minor": minor,
+                       "compatible": major == REQUIRED_PY_MAJOR and minor == REQUIRED_PY_MINOR})
+    return result
+
+
+def _native_candidates(root: Path, preferred: str | None = None) -> list[str]:
+    """所有候选解释器路径（按优先级：指定 → 内置 → py launcher → PATH → 常见目录）。"""
+    try:
+        found = discover_pythons(root, preferred)
+        paths = [item["python"] for item in found]
+    except Exception:
+        paths = []
+    if preferred and Path(preferred).is_file() and preferred not in paths:
+        paths.insert(0, preferred)
+    if not paths:
+        paths = ["py", "python", "python3"]
+    return paths
+
+
+_probe_cache: dict[str, tuple[float, dict | None]] = {}
+PROBE_TTL_SECONDS = 300.0
+
+
+def _probe_torch(python: str) -> dict | None:
+    """探测某个解释器是否有可用的 CUDA torch；返回 {torchVersion, sitePackages} 或 None。
+
+    探测要起子进程 + import torch（较慢），带 5 分钟缓存避免反复扫。
+    """
+    key = python.lower()
+    now = time.time()
+    hit = _probe_cache.get(key)
+    if hit and now - hit[0] < PROBE_TTL_SECONDS:
+        return hit[1]
+    result = _probe_torch_uncached(python)
+    _probe_cache[key] = (now, result)
+    return result
+
+
+def _probe_torch_uncached(python: str) -> dict | None:
+    probe = (
+        "import torch, os;"
+        "print(torch.__version__);"
+        "print('1' if torch.cuda.is_available() else '0');"
+        "print(os.path.dirname(os.path.dirname(torch.__file__)))"
+    )
+    try:
+        out = subprocess.run([python, "-c", probe], **_run_kwargs(timeout=30))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = [ln.strip() for ln in (out.stdout or "").splitlines() if ln.strip()]
+    if len(lines) < 3:
+        return None
+    version, cuda_flag, site = lines[0], lines[1], lines[2]
+    if cuda_flag != "1":
+        return None
+    return {"python": python, "sitePackages": site,
+            "torchVersion": version, "cuda": True}
 
 
 def detect_native_torch(root: Path, preferred: str | None = None) -> dict | None:
-    """检测本机原生 Python 3.11 是否已装好可用的 CUDA 版 torch。
+    """自动搜索本机所有 Python，找出第一个已装好可用 CUDA torch 的环境。
 
-    优先用户手动指定的路径（preferred）。若找到，返回该解释器及其
-    site-packages 路径（可直接复用，无需下载）；否则返回 None。
-    这是「优先复用本机环境」的关键：原生通过就直接用原电脑的。
+    优先用户手动指定的路径（preferred），然后按 py launcher / PATH / 常见目录
+    的顺序逐个探测——这样即使机器上装了多个 Python、只有其中一个装好了
+    CUDA torch，也能被自动找到并直接复用，不需要再下载。
     """
     for cand in _native_candidates(root, preferred):
         if _python_matches(cand) is None:
             continue
-        # 让解释器报告 torch 版本、CUDA 是否可用、torch 所在目录。
-        # 用 torch.__file__ 的父目录（site-packages）定位，比 getsitepackages()[0] 更可靠。
-        probe = (
-            "import torch, os;"
-            "print(torch.__version__);"
-            "print('1' if torch.cuda.is_available() else '0');"
-            "print(os.path.dirname(os.path.dirname(torch.__file__)))"
-        )
-        try:
-            out = subprocess.run([cand, "-c", probe],
-                                 **_run_kwargs(timeout=30))
-        except (OSError, subprocess.SubprocessError):
-            continue
-        lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
-        if len(lines) < 3:
-            continue
-        version, cuda_flag, site = lines[0], lines[1], lines[2]
-        if cuda_flag == "1":
-            return {
-                "python": cand,
-                "sitePackages": site,
-                "torchVersion": version,
-                "cuda": True,
-            }
+        hit = _probe_torch(cand)
+        if hit:
+            return hit
     return None
+
+
+def detect_all_native(root: Path, preferred: str | None = None) -> list[dict]:
+    """列出所有 Python 及其 torch/CUDA 状态，供设置页展示（多 Python 场景）。
+
+    每个元素：{python, version, compatible, torchVersion?, cuda?, sitePackages?}
+    """
+    result: list[dict] = []
+    for item in discover_pythons(root, preferred):
+        entry = dict(item)
+        if item.get("compatible"):
+            hit = _probe_torch(str(item["python"]))
+            if hit:
+                entry.update({"torchVersion": hit["torchVersion"],
+                              "cuda": True,
+                              "sitePackages": hit["sitePackages"]})
+            else:
+                entry.update({"cuda": False})
+        else:
+            entry.update({"cuda": False, "incompatible": True})
+        result.append(entry)
+    return result
 
 
 def _run_install(root: Path, python: str) -> None:
@@ -306,6 +448,95 @@ def set_native_preference(root: Path, enabled: bool, native: dict | None = None)
     else:
         if p.is_file():
             p.unlink()
+
+
+# 探测缓存：发现 Python 与 torch 探测都要启动子进程，较慢；
+# 用短 TTL 缓存避免每次状态轮询都重扫一遍。
+_scan_cache: dict[str, tuple[float, list[dict]]] = {}
+_scan_lock = threading.Lock()
+SCAN_TTL_SECONDS = 300.0
+
+
+def discover_pythons_cached(root: Path, preferred: str | None = None,
+                            force: bool = False) -> list[dict]:
+    """带缓存的 Python 列表（5 分钟内复用结果，避免反复起子进程）。"""
+    key = str(root.resolve())
+    now = time.time()
+    with _scan_lock:
+        hit = _scan_cache.get(key)
+        if hit and not force and now - hit[0] < SCAN_TTL_SECONDS:
+            return hit[1]
+    try:
+        found = discover_pythons(root, preferred)
+    except Exception:
+        found = []
+    with _scan_lock:
+        _scan_cache[key] = (now, found)
+    return found
+
+
+def auto_enable_native(root: Path, preferred: str | None = None) -> dict | None:
+    """自动复用本机已装好的 CUDA torch —— 检测到就直接用，不再让用户下载。
+
+    逻辑：
+    1. 已有保存的 native.json 且目录仍有效 → 直接返回它；
+    2. 否则自动搜索所有 Python，找到第一个带可用 CUDA torch 的 → 立刻写入
+       native.json 并加入 sys.path，返回该环境；
+    3. 都没有 → 返回 None（此时才需要下载）。
+
+    返回 {python, sitePackages, torchVersion, cuda, reused} 或 None。
+    """
+    pref = read_native_preference(root)
+    if pref:
+        site = str(pref.get("sitePackages") or "")
+        if site and Path(site).is_dir():
+            apply_native_to_syspath(root)
+            return {"python": pref.get("python", ""), "sitePackages": site,
+                    "torchVersion": pref.get("torchVersion", ""),
+                    "cuda": True, "reused": True}
+
+    hit = detect_native_torch(root, preferred)
+    if not hit:
+        return None
+    set_native_preference(root, True, hit)
+    apply_native_to_syspath(root)
+    hit["reused"] = True
+    return hit
+
+
+def scan_native_report(root: Path, preferred: str | None = None,
+                       force: bool = False) -> dict:
+    """给设置页用：列出本机所有 Python + 是否有可用 CUDA torch + 当前选用哪一个。
+
+    force=True 时清缓存重新扫描（「重新扫描」按钮用）。
+    """
+    if force:
+        _probe_cache.clear()
+    pythons = discover_pythons_cached(root, preferred, force=force)
+    usable = None
+    entries: list[dict] = []
+    for item in pythons:
+        entry = dict(item)
+        if item.get("compatible"):
+            hit = _probe_torch(str(item["python"]))
+            if hit:
+                entry.update({"torchVersion": hit["torchVersion"], "cuda": True,
+                              "sitePackages": hit["sitePackages"]})
+                if usable is None:
+                    usable = hit
+            else:
+                entry["cuda"] = False
+        else:
+            entry["cuda"] = False
+            entry["incompatible"] = True
+        entries.append(entry)
+    pref = read_native_preference(root)
+    return {
+        "pythons": entries,
+        "usable": usable,
+        "active": pref,
+        "count": len(entries),
+    }
 
 
 def apply_native_to_syspath(root: Path) -> bool:

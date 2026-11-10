@@ -24,6 +24,15 @@ public sealed class LatencyItem
     public override string ToString() => Label;
 }
 
+/// <summary>设置页里「本机找到的 Python」一行：版本、路径、是否可用。</summary>
+public sealed class PythonEntry
+{
+    public string Version { get; init; } = "";
+    public string Path { get; init; } = "";
+    public string State { get; init; } = "";
+    public bool Usable { get; init; }
+}
+
 public sealed class PluginItem
 {
     public int Index { get; init; }
