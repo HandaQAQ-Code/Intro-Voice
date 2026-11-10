@@ -33,6 +33,19 @@ public sealed class PythonEntry
     public bool Usable { get; init; }
 }
 
+/// <summary>新手引导里的设备下拉项。</summary>
+public sealed class GuideDevice
+{
+    public int Id { get; init; }
+    public string Label { get; init; } = "";
+    public bool IsCable { get; init; }
+
+    /// <summary>CABLE 端点额外标注，帮用户一眼认出该选哪个。</summary>
+    public string Display => IsCable ? Label + "   ← 选这个" : Label;
+
+    public override string ToString() => Display;
+}
+
 public sealed class PluginItem
 {
     public int Index { get; init; }

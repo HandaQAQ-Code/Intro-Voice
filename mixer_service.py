@@ -1366,8 +1366,39 @@ class Service:
         virtual = devices.get("virtual") or {}
         from live_voice import PROFILE
         gpu_ok, _gpu_note = gpu_capability()
+        def slim(items, current_id=-1):
+            """给下拉框用的精简列表：优先只留 WASAPI 端点。
+
+            同一物理设备在 MME / DirectSound / WASAPI 下会各出现一次，
+            全列出来既长又容易选错；引擎用 WASAPI 时带 auto_convert 最稳，
+            所以有 WASAPI 就只给 WASAPI，没有才退回全部。
+            当前已选的若不在精简列表里（例如旧配置存的是 MME 端点），
+            补回列表最前面，保证下拉框能如实显示「当前选的是哪个」。
+            """
+            wasapi = [i for i in items if i.get("host") == "Windows WASAPI"]
+            chosen = wasapi or items
+            if current_id >= 0 and all(i["id"] != current_id for i in chosen):
+                extra = next((i for i in items if i["id"] == current_id), None)
+                if extra is not None:
+                    chosen = [extra] + chosen
+            def recommended(item):
+                """只有标准 CABLE Input/Output 才算推荐项；16ch 变体保留但不引导。"""
+                name = item["name"].lower()
+                if "16ch" in name.replace(" ", ""):
+                    return False
+                return "cable" in name
+
+            return [{
+                "id": item["id"],
+                "label": item["label"],
+                "isCable": recommended(item),
+                "name": item["name"],
+            } for item in chosen]
+
         return {
             "devicesOk": sys_ok,
+            "inputs": slim(devices.get("inputs") or [], in_id),
+            "outputs": slim(devices.get("outputs") or [], out_id),
             "inputDevice": in_id,
             "inputLabel": in_label,
             "inputReady": in_id >= 0 and bool(in_label),
@@ -1457,6 +1488,25 @@ class Service:
             changed = True
         if "tutorialSeen" in request:
             self.settings["tutorialSeen"] = bool(request["tutorialSeen"])
+            changed = True
+        if "inputDevice" in request:
+            dev_id = int(request["inputDevice"])
+            if dev_id >= 0:
+                info = sd.query_devices(dev_id)
+                if not info["max_input_channels"]:
+                    raise RuntimeError("该设备没有录音通道，不能作为输入")
+            self.settings["inputDevice"] = dev_id
+            self.settings["input"] = device_label(dev_id) if dev_id >= 0 else ""
+            self.settings["inputSource"] = "device"
+            changed = True
+        if "outputDevice" in request:
+            dev_id = int(request["outputDevice"])
+            if dev_id >= 0:
+                info = sd.query_devices(dev_id)
+                if not info["max_output_channels"]:
+                    raise RuntimeError("该设备没有播放通道，不能作为输出")
+            self.settings["outputDevice"] = dev_id
+            self.settings["output"] = device_label(dev_id) if dev_id >= 0 else ""
             changed = True
         if "mobilePort" in request:
             port = int(request["mobilePort"])

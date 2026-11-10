@@ -1333,7 +1333,7 @@ def process(x, sr, params):
     }
 
     // ------------------------------------------------------------------
-    // 新手引导：不只看文字，直接在向导里把配置做好
+    // 新手引导：一步只做一件事，从选麦克风开始往下走
     // 首次打开自动展示；侧边栏「新手教程」可随时重走
     // ------------------------------------------------------------------
     private int _guideStep;
@@ -1345,17 +1345,19 @@ def process(x, sr, params):
     private Button? _guidePrev;
     private JsonElement _guideStatus;
     private bool _guideBusy;
+    private bool _guideRendering;
     private string _guideToast = "";
 
-    private const int GuideStepCount = 6;
+    private const int GuideStepCount = 7;
 
     private static readonly string[] GuideTitles =
     {
         "欢迎使用 Intro Voice 音拓",
-        "第一步 · 接上设备",
-        "第二步 · 启动引擎",
-        "第三步 · 选择音质档",
-        "第四步 · OBS 绑定",
+        "第 1 步 · 选一个麦克风",
+        "第 2 步 · 选输出到虚拟声卡",
+        "第 3 步 · 启动引擎",
+        "第 4 步 · 选音质档",
+        "第 5 步 · 在 OBS 里采集",
         "配置完成",
     };
 
@@ -1374,6 +1376,7 @@ def process(x, sr, params):
     {
         if (_guideDialog is not null) return;
         _guideStep = 0;
+        _guideToast = "";
 
         var stepLabel = new TextBlock
         {
@@ -1430,7 +1433,7 @@ def process(x, sr, params):
         root.Children.Add(new ScrollViewer
         {
             Content = body,
-            MaxHeight = 380,
+            MaxHeight = 400,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         });
         root.Children.Add(footer);
@@ -1461,98 +1464,118 @@ def process(x, sr, params):
         if (_guideTitle is null || _guideBody is null
             || _guideStepLabel is null || _guideNext is null || _guidePrev is null) return;
 
-        _guideStepLabel.Text = $"新手引导 · {_guideStep + 1} / {GuideStepCount}";
-        _guideTitle.Text = GuideTitles[Math.Clamp(_guideStep, 0, GuideStepCount - 1)];
-        _guidePrev.IsEnabled = _guideStep > 0 && !_guideBusy;
-
-        // 每步都刷新一次真实状态：向导里看到的就是当前配置。
+        _guideRendering = true;
         try
         {
-            _guideStatus = await _client.CallAsync("guide_status", null, 20000);
-        }
-        catch
-        {
-            // 状态拿不到时仍渲染静态说明，不阻断流程。
-        }
+            _guideStepLabel.Text = $"新手引导 · {_guideStep + 1} / {GuideStepCount}";
+            _guideTitle.Text = GuideTitles[Math.Clamp(_guideStep, 0, GuideStepCount - 1)];
+            _guidePrev.IsEnabled = _guideStep > 0 && !_guideBusy;
+            _guideNext.IsEnabled = false;
 
-        _guideBody.Children.Clear();
-        try
-        {
-            switch (_guideStep)
+            // 每步都刷新真实状态：看到的就是当前配置。
+            try
             {
-                case 0: RenderGuideWelcome(); break;
-                case 1: RenderGuideDevices(); break;
-                case 2: RenderGuideEngine(); break;
-                case 3: RenderGuideQuality(); break;
-                case 4: RenderGuideObs(); break;
-                default: RenderGuideDone(); break;
+                _guideStatus = await _client.CallAsync("guide_status", null, 20000);
+                int nIn = 0, nOut = 0;
+                if (_guideStatus.ValueKind == JsonValueKind.Object)
+                {
+                    if (_guideStatus.TryGetProperty("inputs", out var a1)
+                        && a1.ValueKind == JsonValueKind.Array) nIn = a1.GetArrayLength();
+                    if (_guideStatus.TryGetProperty("outputs", out var a2)
+                        && a2.ValueKind == JsonValueKind.Array) nOut = a2.GetArrayLength();
+                }
+                App.Trace($"guide: kind={_guideStatus.ValueKind} inputs={nIn} outputs={nOut}");
             }
-        }
-        catch (Exception ex)
-        {
-            App.Trace("guide render failed: " + ex);
-            _guideBody.Children.Add(new TextBlock
+            catch (Exception ex)
             {
-                Text = "这一步加载失败：" + ex.Message,
-                TextWrapping = TextWrapping.Wrap,
-                FontSize = 13,
-            });
+                App.Trace("guide: status failed " + ex.Message);
+            }
+
+            _guideBody.Children.Clear();
+            try
+            {
+                switch (_guideStep)
+                {
+                    case 0: RenderGuideWelcome(); break;
+                    case 1: RenderGuideMic(); break;
+                    case 2: RenderGuideOutput(); break;
+                    case 3: RenderGuideEngine(); break;
+                    case 4: RenderGuideQuality(); break;
+                    case 5: RenderGuideObs(); break;
+                    default: RenderGuideDone(); break;
+                }
+            }
+            catch (Exception ex)
+            {
+                App.Trace("guide render failed: " + ex);
+                _guideBody.Children.Add(new TextBlock
+                {
+                    Text = "这一步加载失败：" + ex.Message,
+                    TextWrapping = TextWrapping.Wrap,
+                    FontSize = 13,
+                });
+            }
+            AppendGuideToast();
+            _guideToast = "";
         }
-        AppendGuideToast();
-        _guideToast = "";   // 只显示一次
+        finally
+        {
+            _guideRendering = false;
+        }
     }
 
-    // -- 步骤 0：欢迎 ---------------------------------------------------
+    // -- 0 欢迎 ---------------------------------------------------------
     private void RenderGuideWelcome()
     {
-        AddGuideText("它把普通麦克风变成直播级人声：实时处理，再通过虚拟声卡送进 OBS、会议或游戏。");
-        AddGuideText("接下来 5 步会直接帮你把配置做好：自动选设备、一键启动、选好音质档，"
-                     + "不是只看说明。", secondary: true);
-        AddGuideChecklist(new[]
-        {
-            ("链路", "麦克风 → 音拓 → 虚拟声卡 → OBS", true),
-            ("延迟", "约 200 毫秒，可边播边调", true),
-            ("隐私", "参数只存本机，不上传音频", true),
-        });
+        AddGuideText("接下来会一步步带你配好：选麦克风 → 选输出 → 启动 → 选音质档。每步只做一件事。");
+        AddGuideText("全程约两分钟，配完就能在 OBS 或会议软件里用上处理过的人声。", secondary: true);
+        if (_guideNext is not null) _guideNext.IsEnabled = true;
     }
 
-    // -- 步骤 1：设备 ---------------------------------------------------
-    private void RenderGuideDevices()
+    // -- 1 选麦克风 -----------------------------------------------------
+    private void RenderGuideMic()
     {
-        bool inputReady = Bool(_guideStatus, "inputReady");
-        bool outputReady = Bool(_guideStatus, "outputReady");
+        AddGuideText("从列表里选你实际说话用的麦克风。不确定就先选名字里带「麦克风」的那个。");
+
+        int current = (int)Num(_guideStatus, "inputDevice", -1);
+        var combo = BuildDeviceCombo("inputs", current, "inputDevice");
+        _guideBody!.Children.Add(combo);
+
+        bool ready = Bool(_guideStatus, "inputReady");
+        string label = Str(_guideStatus, "inputLabel");
+        if (ready)
+        {
+            AddGuideText("已选择：" + label, secondary: true);
+        }
+        else
+        {
+            // 新用户没选过：直接把系统推荐的麦克风填进去，省一步操作。
+            string suggest = Str(_guideStatus, "suggestInputLabel");
+            var preset = ((List<GuideDevice>)combo.ItemsSource)
+                .FirstOrDefault(d => d.Label == suggest);
+            if (preset is not null)
+            {
+                AddGuideText("已为你预选系统默认麦克风，确认无误就点「下一步」。", secondary: true);
+                _ = SaveGuideDeviceAsync("inputDevice", preset.Id);
+            }
+            else
+            {
+                AddGuideText("还没有选择。选好后会自动保存。", secondary: true);
+            }
+        }
+
+        if (_guideNext is not null) _guideNext.IsEnabled = ready;
+    }
+
+    // -- 2 选输出 -------------------------------------------------------
+    private void RenderGuideOutput()
+    {
         bool virtualInstalled = Bool(_guideStatus, "virtualInstalled");
-        string inputLabel = Str(_guideStatus, "inputLabel");
-        string outputLabel = Str(_guideStatus, "outputLabel");
-        string suggestInput = Str(_guideStatus, "suggestInputLabel");
-        string cableLabel = Str(_guideStatus, "cableInLabel");
-
-        AddGuideText("设备是整条链路的基础，这一步可以直接帮你选好。");
-
-        AddGuideChecklist(new[]
-        {
-            ("输入麦克风", inputReady ? inputLabel : "未选择", inputReady),
-            ("输出（虚拟声卡）", outputReady ? outputLabel : "未选中 CABLE Input", outputReady),
-            ("VB-CABLE 驱动", virtualInstalled ? "已安装" : "未安装", virtualInstalled),
-        });
-
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        actions.Children.Add(GuideActionButton("一键自动配置", async () =>
-        {
-            await _client.CallAsync("guide_auto_devices", null, 25000);
-            ShowGuideToast("已自动选好输入和输出 ✓");
-        }, accent: true));
-
-        actions.Children.Add(GuideActionButton("手动选择", () =>
-        {
-            _guideDialog?.Hide();
-            ShowPage("live");
-            return Task.CompletedTask;
-        }));
-
         if (!virtualInstalled)
         {
-            actions.Children.Add(GuideActionButton("获取 VB-CABLE", () =>
+            AddGuideText("没检测到 VB-CABLE 虚拟声卡，这一步需要它才能把声音送进 OBS。");
+            var get = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            get.Children.Add(GuideActionButton("打开 VB-CABLE 官网", () =>
             {
                 try
                 {
@@ -1561,44 +1584,73 @@ def process(x, sr, params):
                 }
                 catch (Exception ex) { ShowError(ex.Message); }
                 return Task.CompletedTask;
-            }));
+            }, accent: true));
+            _guideBody!.Children.Add(get);
+            AddGuideText("装完重启本程序，再从这一步继续。", secondary: true);
+            return;
         }
-        _guideBody!.Children.Add(actions);
 
-        if (!inputReady && suggestInput.Length > 0)
-            AddGuideText("推荐的输入：" + suggestInput, secondary: true);
-        if (!outputReady && cableLabel.Length > 0)
-            AddGuideText("检测到的 CABLE Input：" + cableLabel + "（点「一键自动配置」即可选中）",
-                         secondary: true);
+        AddGuideText("输出要选 CABLE Input（注意是 Input）——这是本软件写入、OBS 去读的那一端。");
 
-        if (_guideNext is not null)
+        int current = (int)Num(_guideStatus, "outputDevice", -1);
+        var combo = BuildDeviceCombo("outputs", current, "outputDevice",
+                                     preferCable: true);
+        _guideBody!.Children.Add(combo);
+
+        bool ready = Bool(_guideStatus, "outputReady");
+        string label = Str(_guideStatus, "outputLabel");
+        if (ready)
         {
-            _guideNext.IsEnabled = inputReady && outputReady;
-            if (!_guideNext.IsEnabled)
-                AddGuideText("设备都就绪后才能继续；也可以点「关闭」，稍后在主控页手动设置。",
-                             secondary: true);
+            AddGuideText("已选择：" + label, secondary: true);
         }
+        else if (label.Length > 0)
+        {
+            AddGuideText("当前选的是「" + label + "」，不是 CABLE Input。请改选带「← 选这个」标记的那一项。",
+                         secondary: true);
+        }
+        else
+        {
+            // 没选过：直接预选 CABLE Input（列表里标了「← 选这个」）。
+            var preset = ((List<GuideDevice>)combo.ItemsSource).FirstOrDefault(d => d.IsCable);
+            if (preset is not null)
+            {
+                AddGuideText("已为你预选 CABLE Input，确认无误就点「下一步」。", secondary: true);
+                _ = SaveGuideDeviceAsync("outputDevice", preset.Id);
+            }
+            else
+            {
+                AddGuideText("还没有选择输出。", secondary: true);
+            }
+        }
+
+        if (_guideNext is not null) _guideNext.IsEnabled = ready;
     }
 
-    // -- 步骤 2：启动引擎 -----------------------------------------------
+    // -- 3 启动引擎 -----------------------------------------------------
     private void RenderGuideEngine()
     {
         bool running = Bool(_guideStatus, "engineRunning");
         string aiMode = Str(_guideStatus, "aiMode");
         bool voice = Bool(_guideStatus, "voiceReady");
-        AddGuideText("点一下就能启动，启动后 OBS 立刻能收到声音。");
 
-        AddGuideChecklist(new[]
+        if (running)
         {
-            ("引擎状态", running ? "运行中 ✓" : "已停止", running),
-            ("输出设备", Str(_guideStatus, "outputLabel"), Bool(_guideStatus, "outputReady")),
-        });
+            AddGuideText("引擎已经在运行，声音应该已经送进虚拟声卡了。");
+            AddGuideChecklist(new[]
+            {
+                ("引擎", "运行中 ✓", true),
+                ("输出", Str(_guideStatus, "outputLabel"), Bool(_guideStatus, "outputReady")),
+            });
+            if (_guideNext is not null) _guideNext.IsEnabled = true;
+            return;
+        }
 
-        // 提前拦住必然失败的启动：AI 档需要声纹，没有就先说清楚。
-        if (!running && aiMode != "off" && !voice)
+        AddGuideText("点下面的按钮启动。启动后顶栏会显示「运行中」。");
+
+        // 提前拦住必然失败的启动：AI 档需要声纹。
+        if (aiMode != "off" && !voice)
         {
-            AddGuideText("注意：当前 AI 档需要声纹，但还没有录制，直接启动会失败。"
-                         + "建议先到「设置 → AI 声纹」录 6 秒，或下一步里先切到「关闭」。",
+            AddGuideText("当前音质档是 AI 档，但还没录声纹，直接启动会失败。可以先录声纹，或下一步先把 AI 关掉。",
                          secondary: true);
             var fix = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
             fix.Children.Add(GuideActionButton("去录制声纹", () =>
@@ -1606,7 +1658,7 @@ def process(x, sr, params):
                 _guideDialog?.Hide();
                 ShowPage("settings");
                 return Task.CompletedTask;
-            }, accent: true));
+            }));
             fix.Children.Add(GuideActionButton("先切到关闭档", async () =>
             {
                 await _client.CallAsync("set_options",
@@ -1616,82 +1668,68 @@ def process(x, sr, params):
             _guideBody!.Children.Add(fix);
         }
 
-        if (!running)
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        actions.Children.Add(GuideActionButton("启动引擎", async () =>
         {
-            var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-            actions.Children.Add(GuideActionButton("立即启动", async () =>
-            {
-                var r = await _client.CallAsync("start", new JsonObject(), 40000);
-                if (Bool(r, "started")) ShowGuideToast("引擎已启动 ✓");
-            }, accent: true));
-            actions.Children.Add(GuideActionButton("去主控页启动", () =>
-            {
-                _guideDialog?.Hide();
-                ShowPage("live");
-                return Task.CompletedTask;
-            }));
-            _guideBody!.Children.Add(actions);
-        }
-        else
-        {
-            AddGuideText("引擎已在运行，可以直接进入下一步。", secondary: true);
-        }
+            var r = await _client.CallAsync("start", new JsonObject(), 40000);
+            if (Bool(r, "started")) ShowGuideToast("引擎已启动 ✓");
+        }, accent: true));
+        _guideBody!.Children.Add(actions);
 
-        if (_guideNext is not null) _guideNext.IsEnabled = true;
+        AddGuideText("启动成功后点「下一步」。", secondary: true);
+        if (_guideNext is not null) _guideNext.IsEnabled = running;
     }
 
-    // -- 步骤 3：音质档 -------------------------------------------------
+    // -- 4 音质档 -------------------------------------------------------
     private void RenderGuideQuality()
     {
         string aiMode = Str(_guideStatus, "aiMode");
         bool gpu = Bool(_guideStatus, "gpuAvailable");
         bool voice = Bool(_guideStatus, "voiceReady");
-        string current = aiMode switch
-        {
-            "cpu" => "CPU 档（声纹提取 + 实时降噪）",
-            "gpu" => "GPU 档（最强，占用显存）",
-            _ => "关闭（仅基础处理）",
-        };
 
-        AddGuideText("这一步决定人声处理强度，可以直接切换。");
-        AddGuideChecklist(new[]
-        {
-            ("当前档位", current, true),
-            ("GPU 可用", gpu ? "可用（已复用本机 PyTorch）" : "不可用", gpu),
-            ("AI 声纹", voice ? "已就绪" : "未录制", voice),
-        });
+        AddGuideText("选一档就行，之后随时能在「主控」页改。");
 
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        actions.Children.Add(GuideActionButton("用 CPU 档", async () =>
-        {
-            await _client.CallAsync("set_options",
-                new JsonObject { ["aiMode"] = "cpu" }, 10000);
-            ShowGuideToast("已切到 CPU 档 ✓");
-        }, accent: aiMode != "cpu"));
-
-        actions.Children.Add(GuideActionButton("用 GPU 档", async () =>
-        {
-            if (!voice)
-                throw new InvalidOperationException(
-                    "还没有 AI 声纹。请先到「设置 → AI 声纹」录 6 秒。");
-            if (!gpu)
-                throw new InvalidOperationException("本机 GPU 档不可用，请改用 CPU 档。");
-            await _client.CallAsync("set_options",
-                new JsonObject { ["aiMode"] = "gpu" }, 15000);
-            ShowGuideToast("已切到 GPU 档 ✓");
-        }));
-
-        actions.Children.Add(GuideActionButton("暂时关闭", async () =>
-        {
-            await _client.CallAsync("set_options",
-                new JsonObject { ["aiMode"] = "off" }, 10000);
-            ShowGuideToast("已关闭 AI 处理");
-        }));
-        _guideBody!.Children.Add(actions);
+        var options = new StackPanel { Spacing = 6 };
+        options.Children.Add(GuideRadio(
+            "关闭 —— 只做基础处理，最省资源，最稳",
+            aiMode == "off",
+            async () =>
+            {
+                await _client.CallAsync("set_options",
+                    new JsonObject { ["aiMode"] = "off" }, 10000);
+                ShowGuideToast("已选「关闭」✓");
+            }));
+        options.Children.Add(GuideRadio(
+            "CPU 档 —— 声纹提取 + 实时降噪，人声更干净（推荐）" + (voice ? "" : "（需先录声纹）"),
+            aiMode == "cpu",
+            async () =>
+            {
+                if (!voice)
+                    throw new InvalidOperationException(
+                        "还没有 AI 声纹。请到「设置 → AI 声纹」录 6 秒后再选这一档。");
+                await _client.CallAsync("set_options",
+                    new JsonObject { ["aiMode"] = "cpu" }, 10000);
+                ShowGuideToast("已选 CPU 档 ✓");
+            }));
+        options.Children.Add(GuideRadio(
+            "GPU 档 —— 效果最强，占用显存" + (gpu ? "" : "（本机不可用）"),
+            aiMode == "gpu",
+            async () =>
+            {
+                if (!gpu)
+                    throw new InvalidOperationException("本机 GPU 档不可用，请选 CPU 或关闭。");
+                if (!voice)
+                    throw new InvalidOperationException(
+                        "还没有 AI 声纹。请到「设置 → AI 声纹」录 6 秒后再选这一档。");
+                await _client.CallAsync("set_options",
+                    new JsonObject { ["aiMode"] = "gpu" }, 15000);
+                ShowGuideToast("已选 GPU 档 ✓");
+            }));
+        _guideBody!.Children.Add(options);
 
         if (!voice)
         {
-            _guideBody.Children.Add(GuideActionButton("去录制声纹", () =>
+            _guideBody.Children.Add(GuideActionButton("去录制声纹（6 秒）", () =>
             {
                 _guideDialog?.Hide();
                 ShowPage("settings");
@@ -1701,15 +1739,15 @@ def process(x, sr, params):
         if (_guideNext is not null) _guideNext.IsEnabled = true;
     }
 
-    // -- 步骤 4：OBS ----------------------------------------------------
+    // -- 5 OBS ----------------------------------------------------------
     private void RenderGuideObs()
     {
-        AddGuideText("最后一步是在 OBS（或会议软件）里把声音接过来。");
+        AddGuideText("最后在 OBS（或会议软件）里把声音接过来，这一步在别的软件里操作。");
         AddGuideChecklist(new[]
         {
-            ("OBS 操作", "添加「音频输入采集」→ 设备选 CABLE Output", true),
-            ("会议/游戏", "麦克风设为 CABLE Output", true),
-            ("验证", "主控页输出电平随说话跳动即成功", true),
+            ("OBS", "来源 → 音频输入采集 → 设备选 CABLE Output", true),
+            ("会议 / 游戏", "麦克风设为 CABLE Output", true),
+            ("验证", "回到「主控」页说话，输出电平跳动就通了", true),
         });
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
@@ -1721,11 +1759,10 @@ def process(x, sr, params):
             ShowGuideToast("已复制设备名，去 OBS 里粘贴选择");
             await Task.CompletedTask;
         }, accent: true));
-
-        actions.Children.Add(GuideActionButton("去麦克风配置页", () =>
+        actions.Children.Add(GuideActionButton("回主控页看电平", () =>
         {
             _guideDialog?.Hide();
-            ShowPage("mic");
+            ShowPage("live");
             return Task.CompletedTask;
         }));
         _guideBody!.Children.Add(actions);
@@ -1733,16 +1770,18 @@ def process(x, sr, params):
         if (_guideNext is not null) _guideNext.IsEnabled = true;
     }
 
-    // -- 步骤 5：完成 ---------------------------------------------------
+    // -- 6 完成 ---------------------------------------------------------
     private void RenderGuideDone()
     {
-        AddGuideText("按下面的清单确认一下，都打勾就可以开播了。");
+        bool devicesReady = Bool(_guideStatus, "inputReady") && Bool(_guideStatus, "outputReady");
+        bool running = Bool(_guideStatus, "engineRunning");
+        AddGuideText("按清单确认一下，打勾就可以开播了。");
+
         AddGuideChecklist(new[]
         {
-            ("输入 / 输出设备", Bool(_guideStatus, "inputReady") && Bool(_guideStatus, "outputReady")
-                ? "已配置" : "未完成", Bool(_guideStatus, "inputReady") && Bool(_guideStatus, "outputReady")),
-            ("引擎", Bool(_guideStatus, "engineRunning") ? "运行中" : "已停止",
-                Bool(_guideStatus, "engineRunning")),
+            ("麦克风", Str(_guideStatus, "inputLabel"), Bool(_guideStatus, "inputReady")),
+            ("输出", Str(_guideStatus, "outputLabel"), Bool(_guideStatus, "outputReady")),
+            ("引擎", running ? "运行中" : "已停止", running),
             ("音质档", Str(_guideStatus, "aiMode") switch
             {
                 "cpu" => "CPU 档",
@@ -1753,12 +1792,134 @@ def process(x, sr, params):
                 Bool(_guideStatus, "voiceReady")),
         });
 
-        AddGuideText("随时可以点左下角「新手教程」重走这份引导，或到「设置」里改 Python 与声纹。",
+        var missing = new List<string>();
+        if (!Bool(_guideStatus, "inputReady")) missing.Add("麦克风");
+        if (!Bool(_guideStatus, "outputReady")) missing.Add("输出");
+        if (!running) missing.Add("引擎");
+        if (missing.Count > 0)
+            AddGuideText("还差：" + string.Join("、", missing) + "。可以点「上一步」回去补。",
+                         secondary: true);
+        else
+            AddGuideText("都配好了 —— 现在打开 OBS 添加音频输入采集即可。", secondary: true);
+
+        AddGuideText("随时可以点左下角「新手教程」重走，或到「设置」里改 Python 与声纹。",
                      secondary: true);
-        if (_guideNext is not null) _guideNext.IsEnabled = true;
+        if (_guideNext is not null)
+        {
+            // 前六步都过了，这里只需完成；缺项时也允许关闭。
+            _guideNext.IsEnabled = true;
+        }
     }
 
-    // -- 引导用的 UI 小工具 ---------------------------------------------
+    // -- 引导用的 UI 组件 -----------------------------------------------
+    private ComboBox BuildDeviceCombo(string key, int currentId, string saveKey,
+                                      bool preferCable = false)
+    {
+        var list = new List<GuideDevice>();
+        if (_guideStatus.ValueKind == JsonValueKind.Object
+            && _guideStatus.TryGetProperty(key, out var arr)
+            && arr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in arr.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                list.Add(new GuideDevice
+                {
+                    Id = (int)Num(item, "id", -1),
+                    Label = Str(item, "label"),
+                    IsCable = Bool(item, "isCable"),
+                });
+            }
+        }
+        // CABLE 端点排前面，用户一眼就能找到该选哪个。
+        if (preferCable)
+            list = list.OrderByDescending(d => d.IsCable).ToList();
+
+        var combo = new ComboBox
+        {
+            ItemsSource = list,
+            DisplayMemberPath = "Display",
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            MinWidth = 430,
+            PlaceholderText = list.Count > 0 ? "从列表里选择一个" : "没有检测到设备",
+        };
+        var selected = list.FirstOrDefault(d => d.Id == currentId);
+        if (selected is not null) combo.SelectedItem = selected;
+        combo.IsEnabled = list.Count > 0;
+
+        combo.SelectionChanged += async (_, _) =>
+        {
+            if (_guideRendering || _guideBusy) return;
+            if (combo.SelectedItem is not GuideDevice device) return;
+            if (device.Id == currentId) return;
+            await SaveGuideDeviceAsync(saveKey, device.Id);
+        };
+        return combo;
+    }
+
+    private async Task SaveGuideDeviceAsync(string saveKey, int deviceId)
+    {
+        if (_guideBusy) return;
+        _guideBusy = true;
+        try
+        {
+            await _client.CallAsync("settings_set",
+                new JsonObject { [saveKey] = deviceId }, 12000);
+            ShowGuideToast("已保存 ✓");
+        }
+        catch (Exception ex)
+        {
+            ShowGuideToast("保存失败：" + ex.Message);
+        }
+        finally
+        {
+            _guideBusy = false;
+            await RenderGuideStepAsync();
+        }
+    }
+
+    /// <summary>单选项：点一下切档，选中态用强调色点标出来。</summary>
+    private Border GuideRadio(string text, bool selected, Func<Task> onPick)
+    {
+        var grid = new Grid { ColumnSpacing = 10 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var dot = new TextBlock
+        {
+            Text = selected ? "●" : "○",
+            FontSize = 14,
+            VerticalAlignment = VerticalAlignment.Top,
+            Foreground = selected
+                ? (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"]
+                : (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+        };
+        grid.Children.Add(dot);
+
+        var label = new TextBlock
+        {
+            Text = text,
+            FontSize = 13,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        Grid.SetColumn(label, 1);
+        grid.Children.Add(label);
+
+        var card = new Border
+        {
+            Padding = new Thickness(12, 9, 12, 9),
+            CornerRadius = new CornerRadius(6),
+            Background = (Brush)Application.Current.Resources["LayerFillColorDefaultBrush"],
+            Child = grid,
+        };
+        card.PointerPressed += async (_, _) =>
+        {
+            if (_guideBusy) return;
+            await RunGuideActionAsync(onPick);
+        };
+        return card;
+    }
+
     private void AddGuideText(string text, bool secondary = false)
     {
         _guideBody!.Children.Add(new TextBlock
@@ -1779,10 +1940,10 @@ def process(x, sr, params):
         {
             var grid = new Grid { ColumnSpacing = 8 };
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(140) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110) });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-            var mark = new TextBlock
+            grid.Children.Add(new TextBlock
             {
                 Text = ok ? "✓" : "○",
                 FontSize = 13,
@@ -1790,8 +1951,7 @@ def process(x, sr, params):
                 Foreground = ok
                     ? (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"]
                     : (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
-            };
-            grid.Children.Add(mark);
+            });
 
             var label = new TextBlock
             {
@@ -1847,7 +2007,7 @@ def process(x, sr, params):
         {
             _guideBusy = false;
             if (sender is not null) sender.IsEnabled = true;
-            // 动作完成后立刻刷新，让勾选状态跟着变。
+            // 动作完成后立刻刷新，让本步的完成条件与勾选状态跟着变。
             await RenderGuideStepAsync();
         }
     }
