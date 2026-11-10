@@ -1598,13 +1598,13 @@ class Service:
                 raise RuntimeError("手机麦克风服务未启动。请到「手机麦克风」页启动服务，或用物理麦克风。")
             cfg["inputDevice"] = -1
         elif cfg["inputDevice"] < 0:
-            raise RuntimeError("尚未选择输入设备")
+            raise RuntimeError("尚未选择输入设备：请在「主控」页选麦克风，或点「新手教程 → 一键自动配置」。")
         if cfg["aiMode"] != "off":
             from live_voice import PROFILE
             if not PROFILE.is_file():
-                raise RuntimeError("尚未录入指定人声纹。请先用旧界面录入或放入 data/target.wav。")
+                raise RuntimeError("AI 档需要你的声纹：请到「设置 → AI 声纹」点「开始录制」录 6 秒，或先把 AI 档切到「关闭」。")
         if cfg["outputDevice"] < 0:
-            raise RuntimeError("尚未选择输出设备")
+            raise RuntimeError("尚未选择输出设备：请在「主控」页选 CABLE Input，或点「新手教程 → 一键自动配置」。")
         device = sd.query_devices(cfg["outputDevice"])
         if not any(k in device["name"].lower() for k in ("cable input", "vb-audio virtual cable")):
             LOG.warning("输出设备不是 CABLE Input：%s", device["name"])

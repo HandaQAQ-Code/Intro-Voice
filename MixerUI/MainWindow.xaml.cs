@@ -1584,6 +1584,8 @@ def process(x, sr, params):
     private void RenderGuideEngine()
     {
         bool running = Bool(_guideStatus, "engineRunning");
+        string aiMode = Str(_guideStatus, "aiMode");
+        bool voice = Bool(_guideStatus, "voiceReady");
         AddGuideText("点一下就能启动，启动后 OBS 立刻能收到声音。");
 
         AddGuideChecklist(new[]
@@ -1591,6 +1593,28 @@ def process(x, sr, params):
             ("引擎状态", running ? "运行中 ✓" : "已停止", running),
             ("输出设备", Str(_guideStatus, "outputLabel"), Bool(_guideStatus, "outputReady")),
         });
+
+        // 提前拦住必然失败的启动：AI 档需要声纹，没有就先说清楚。
+        if (!running && aiMode != "off" && !voice)
+        {
+            AddGuideText("注意：当前 AI 档需要声纹，但还没有录制，直接启动会失败。"
+                         + "建议先到「设置 → AI 声纹」录 6 秒，或下一步里先切到「关闭」。",
+                         secondary: true);
+            var fix = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            fix.Children.Add(GuideActionButton("去录制声纹", () =>
+            {
+                _guideDialog?.Hide();
+                ShowPage("settings");
+                return Task.CompletedTask;
+            }, accent: true));
+            fix.Children.Add(GuideActionButton("先切到关闭档", async () =>
+            {
+                await _client.CallAsync("set_options",
+                    new JsonObject { ["aiMode"] = "off" }, 10000);
+                ShowGuideToast("已切到「关闭」档，现在可以启动了 ✓");
+            }));
+            _guideBody!.Children.Add(fix);
+        }
 
         if (!running)
         {
