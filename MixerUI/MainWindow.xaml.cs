@@ -1335,8 +1335,18 @@ def process(x, sr, params):
     // ------------------------------------------------------------------
     // 新手引导：一步只做一件事，从选麦克风开始往下走
     // 首次打开自动展示；侧边栏「新手教程」可随时重走
+    // 「用手机当麦克风」是一条分支：选了它才插入两步连接教程
     // ------------------------------------------------------------------
+    private enum GuideStep
+    {
+        Welcome, Mic, PhoneStart, PhoneConnect, Voice,
+        Cable, Output, Quality, Engine, Obs, Done,
+    }
+
     private int _guideStep;
+    private List<GuideStep> _guideSteps = BuildGuideSteps(false);
+    private bool _guidePhoneBranch;
+    private bool _guidePhoneReady;
     private ContentDialog? _guideDialog;
     private TextBlock? _guideStepLabel;
     private TextBlock? _guideTitle;
@@ -1347,19 +1357,78 @@ def process(x, sr, params):
     private bool _guideBusy;
     private bool _guideRendering;
     private string _guideToast = "";
+    private bool _guideFinished;
+    // 每步的自动预选只做一次：保存失败时不能一直重渲染形成死循环。
+    private readonly HashSet<string> _guideAutoPicked = new();
 
-    private const int GuideStepCount = 7;
+    // 引导内录声纹：独立的轮询计时器与进度控件引用
+    private DispatcherQueueTimer? _guideVoiceTimer;
+    private TextBlock? _guideVoiceStatus;
+    private ProgressBar? _guideVoiceProgress;
+    private bool _guideVoiceRecording;
 
-    private static readonly string[] GuideTitles =
+    // 引导内手机二维码：按 PIN + 端口缓存，避免每次刷新都重新生成
+    private string _guideQrKey = "";
+    private ImageSource? _guideQrConnect;
+    private ImageSource? _guideQrInstall;
+
+    private static List<GuideStep> BuildGuideSteps(bool phone)
     {
-        "欢迎使用 Intro Voice 音拓",
-        "第 1 步 · 选一个麦克风",
-        "第 2 步 · 选输出到虚拟声卡",
-        "第 3 步 · 启动引擎",
-        "第 4 步 · 选音质档",
-        "第 5 步 · 在 OBS 里采集",
-        "配置完成",
+        var steps = new List<GuideStep> { GuideStep.Welcome, GuideStep.Mic };
+        if (phone)
+        {
+            steps.Add(GuideStep.PhoneStart);
+            steps.Add(GuideStep.PhoneConnect);
+        }
+        steps.Add(GuideStep.Voice);
+        steps.Add(GuideStep.Cable);
+        steps.Add(GuideStep.Output);
+        steps.Add(GuideStep.Quality);
+        steps.Add(GuideStep.Engine);
+        steps.Add(GuideStep.Obs);
+        steps.Add(GuideStep.Done);
+        return steps;
+    }
+
+    private GuideStep CurrentGuideStep() =>
+        _guideSteps[Math.Clamp(_guideStep, 0, _guideSteps.Count - 1)];
+
+    /// <summary>主线步骤固定编号；手机分支是插进来的，不占号也不让后面的步骤跳号。</summary>
+    private static int GuideMainNumber(GuideStep kind) => kind switch
+    {
+        GuideStep.Mic => 1,
+        GuideStep.Voice => 2,
+        GuideStep.Cable => 3,
+        GuideStep.Output => 4,
+        GuideStep.Quality => 5,
+        GuideStep.Engine => 6,
+        GuideStep.Obs => 7,
+        _ => 0,
     };
+
+    private static string GuideTitle(GuideStep kind)
+    {
+        switch (kind)
+        {
+            case GuideStep.Welcome: return "欢迎使用 Intro Voice 音拓";
+            case GuideStep.Done: return "配置完成";
+            case GuideStep.PhoneStart: return "分支教程 · 连接手机麦克风（1/2）";
+            case GuideStep.PhoneConnect: return "分支教程 · 连接手机麦克风（2/2）";
+            default:
+                string name = kind switch
+                {
+                    GuideStep.Mic => "选一个麦克风",
+                    GuideStep.Voice => "录一段声纹给 AI 模型",
+                    GuideStep.Cable => "安装 VB-CABLE 虚拟声卡驱动",
+                    GuideStep.Output => "选输出到虚拟声卡",
+                    GuideStep.Quality => "选音质档",
+                    GuideStep.Engine => "启动引擎",
+                    GuideStep.Obs => "在 OBS 里采集",
+                    _ => "配置",
+                };
+                return $"第 {GuideMainNumber(kind)} 步 · {name}";
+        }
+    }
 
     private async Task ShowTutorialOnFirstRunAsync()
     {
@@ -1377,6 +1446,23 @@ def process(x, sr, params):
         if (_guideDialog is not null) return;
         _guideStep = 0;
         _guideToast = "";
+        _guideFinished = false;
+        _guideAutoPicked.Clear();
+        _guidePhoneReady = false;
+        _guideVoiceRecording = false;
+        _guideQrKey = "";
+        _guideQrConnect = null;
+        _guideQrInstall = null;
+
+        // 已经把手机设成输入源的用户，重走教程时默认落在手机分支上。
+        _guidePhoneBranch = false;
+        try
+        {
+            var initial = await _client.CallAsync("guide_status", null, 20000);
+            _guidePhoneBranch = Str(initial, "inputSource") == "mobile";
+        }
+        catch { /* 服务没连上就走本机默认分支 */ }
+        _guideSteps = BuildGuideSteps(_guidePhoneBranch);
 
         var stepLabel = new TextBlock
         {
@@ -1402,7 +1488,7 @@ def process(x, sr, params):
         };
         next.Click += async (_, _) =>
         {
-            if (_guideStep < GuideStepCount - 1)
+            if (_guideStep < _guideSteps.Count - 1)
             {
                 _guideStep++;
                 await RenderGuideStepAsync();
@@ -1450,12 +1536,27 @@ def process(x, sr, params):
         try { await dialog.ShowAsync(); }
         finally
         {
+            StopGuideVoiceTimer();
+            // 按 Esc 关闭对话框不会走「完成 / 关闭」按钮，也要标记为已看过，
+            // 否则用户没点任何按钮时每次启动都会重新弹教程。
+            if (!_guideFinished && _connected)
+            {
+                _guideFinished = true;
+                try
+                {
+                    await _client.CallAsync("settings_set",
+                        new JsonObject { ["tutorialSeen"] = true }, 8000);
+                }
+                catch { /* 标记失败不影响使用 */ }
+            }
             _guideDialog = null;
             _guideBody = null;
             _guideTitle = null;
             _guideStepLabel = null;
             _guidePrev = null;
             _guideNext = null;
+            _guideVoiceStatus = null;
+            _guideVoiceProgress = null;
         }
     }
 
@@ -1467,10 +1568,15 @@ def process(x, sr, params):
         _guideRendering = true;
         try
         {
-            _guideStepLabel.Text = $"新手引导 · {_guideStep + 1} / {GuideStepCount}";
-            _guideTitle.Text = GuideTitles[Math.Clamp(_guideStep, 0, GuideStepCount - 1)];
+            _guideStep = Math.Clamp(_guideStep, 0, _guideSteps.Count - 1);
+            var kind = CurrentGuideStep();
+            _guideStepLabel.Text = $"新手引导 · {_guideStep + 1} / {_guideSteps.Count}";
+            _guideTitle.Text = GuideTitle(kind);
             _guidePrev.IsEnabled = _guideStep > 0 && !_guideBusy;
             _guideNext.IsEnabled = false;
+            _guideNext.Content = _guideStep == _guideSteps.Count - 1 ? "完成" : "下一步";
+            _guideVoiceStatus = null;
+            _guideVoiceProgress = null;
 
             // 每步都刷新真实状态：看到的就是当前配置。
             try
@@ -1484,24 +1590,31 @@ def process(x, sr, params):
                     if (_guideStatus.TryGetProperty("outputs", out var a2)
                         && a2.ValueKind == JsonValueKind.Array) nOut = a2.GetArrayLength();
                 }
-                App.Trace($"guide: kind={_guideStatus.ValueKind} inputs={nIn} outputs={nOut}");
+                App.Trace($"guide: step={kind} kind={_guideStatus.ValueKind} inputs={nIn} outputs={nOut}");
             }
             catch (Exception ex)
             {
                 App.Trace("guide: status failed " + ex.Message);
             }
 
+            // 手机真连上了就自动把输入源切过去，不用用户再记着去设置里改。
+            if (kind == GuideStep.PhoneConnect) await EnsurePhoneSourceAsync();
+
             _guideBody.Children.Clear();
             try
             {
-                switch (_guideStep)
+                switch (kind)
                 {
-                    case 0: RenderGuideWelcome(); break;
-                    case 1: RenderGuideMic(); break;
-                    case 2: RenderGuideOutput(); break;
-                    case 3: RenderGuideEngine(); break;
-                    case 4: RenderGuideQuality(); break;
-                    case 5: RenderGuideObs(); break;
+                    case GuideStep.Welcome: RenderGuideWelcome(); break;
+                    case GuideStep.Mic: RenderGuideMic(); break;
+                    case GuideStep.PhoneStart: await RenderGuidePhoneStartAsync(); break;
+                    case GuideStep.PhoneConnect: RenderGuidePhoneConnect(); break;
+                    case GuideStep.Voice: RenderGuideVoice(); break;
+                    case GuideStep.Cable: RenderGuideCable(); break;
+                    case GuideStep.Output: RenderGuideOutput(); break;
+                    case GuideStep.Quality: RenderGuideQuality(); break;
+                    case GuideStep.Engine: RenderGuideEngine(); break;
+                    case GuideStep.Obs: RenderGuideObs(); break;
                     default: RenderGuideDone(); break;
                 }
             }
@@ -1524,22 +1637,57 @@ def process(x, sr, params):
         }
     }
 
+    /// <summary>取引导状态里的嵌套对象；不存在时返回 default（各 Str/Bool/Num 已做守卫）。</summary>
+    private JsonElement GuideObj(string name)
+    {
+        if (_guideStatus.ValueKind == JsonValueKind.Object
+            && _guideStatus.TryGetProperty(name, out var value)
+            && value.ValueKind == JsonValueKind.Object) return value;
+        return default;
+    }
+
     // -- 0 欢迎 ---------------------------------------------------------
     private void RenderGuideWelcome()
     {
-        AddGuideText("接下来会一步步带你配好：选麦克风 → 选输出 → 启动 → 选音质档。每步只做一件事。");
-        AddGuideText("全程约两分钟，配完就能在 OBS 或会议软件里用上处理过的人声。", secondary: true);
+        AddGuideText("接下来会一步步带你配好，每步只做一件事，并且当场写进配置：");
+        AddGuideChecklist(new[]
+        {
+            ("1", "选麦克风（本机，或手机当麦克风）", false),
+            ("2", "录声纹、装 CABLE 驱动、选输出", false),
+            ("3", "选音质档 → 启动 → OBS 采集", false),
+        });
+        AddGuideText("全程约三分钟。已经配好的项会自动打勾，可以直接点「下一步」跳过。", secondary: true);
         if (_guideNext is not null) _guideNext.IsEnabled = true;
     }
 
-    // -- 1 选麦克风 -----------------------------------------------------
+    // -- 1 选麦克风：两个选项，第二个进手机分支 ---------------------------
     private void RenderGuideMic()
     {
-        AddGuideText("从列表里选你实际说话用的麦克风。不确定就先选名字里带「麦克风」的那个。");
+        AddGuideText("先决定声音从哪进来。这里给两个选项，选哪个都会立刻写进配置。");
 
+        var choices = new StackPanel { Spacing = 6 };
+        choices.Children.Add(GuideRadio(
+            "① 用电脑上的麦克风 —— 本机 / USB / 声卡，从下面下拉框挑",
+            !_guidePhoneBranch,
+            () => SetGuideBranchAsync(false)));
+        choices.Children.Add(GuideRadio(
+            "② 用手机当麦克风 —— 走 Wi-Fi，进入专门的分支教程",
+            _guidePhoneBranch,
+            () => SetGuideBranchAsync(true)));
+        _guideBody!.Children.Add(choices);
+
+        if (_guidePhoneBranch)
+        {
+            AddGuideText("已选择手机麦克风。点「下一步」进入两步连接教程：启动服务 → 扫码连接。",
+                         secondary: true);
+            if (_guideNext is not null) _guideNext.IsEnabled = true;
+            return;
+        }
+
+        AddGuideText("从列表里选你实际说话用的麦克风。不确定就先选名字里带「麦克风」的那个。");
         int current = (int)Num(_guideStatus, "inputDevice", -1);
         var combo = BuildDeviceCombo("inputs", current, "inputDevice");
-        _guideBody!.Children.Add(combo);
+        _guideBody.Children.Add(combo);
 
         bool ready = Bool(_guideStatus, "inputReady");
         string label = Str(_guideStatus, "inputLabel");
@@ -1553,42 +1701,429 @@ def process(x, sr, params):
             string suggest = Str(_guideStatus, "suggestInputLabel");
             var preset = ((List<GuideDevice>)combo.ItemsSource)
                 .FirstOrDefault(d => d.Label == suggest);
-            if (preset is not null)
+            if (preset is not null && _guideAutoPicked.Add("inputDevice"))
             {
                 AddGuideText("已为你预选系统默认麦克风，确认无误就点「下一步」。", secondary: true);
                 _ = SaveGuideDeviceAsync("inputDevice", preset.Id);
             }
             else
             {
-                AddGuideText("还没有选择。选好后会自动保存。", secondary: true);
+                // 自动预选失败时别再反复重渲染；明确让用户自己选一次。
+                AddGuideText("还没有选择。请从上面的下拉框选一个麦克风，选好后会自动保存。",
+                             secondary: true);
             }
         }
 
         if (_guideNext is not null) _guideNext.IsEnabled = ready;
     }
 
-    // -- 2 选输出 -------------------------------------------------------
+    /// <summary>切换「本机 / 手机」输入方式，同时插入或移除分支步骤。</summary>
+    private async Task SetGuideBranchAsync(bool phone)
+    {
+        if (_guidePhoneBranch == phone) return;
+        _guidePhoneBranch = phone;
+        _guidePhoneReady = false;
+        _guideSteps = BuildGuideSteps(phone);
+        if (!phone)
+        {
+            // 从分支里退出来时回到「选麦克风」，别把用户丢到不存在的步骤号上。
+            _guideStep = _guideSteps.IndexOf(GuideStep.Mic);
+            await _client.CallAsync("guide_source",
+                new JsonObject { ["inputSource"] = "device" }, 12000);
+            ShowGuideToast("已改回本机麦克风 ✓");
+        }
+        else
+        {
+            _guideStep = _guideSteps.IndexOf(GuideStep.Mic);
+            ShowGuideToast("已加入手机麦克风分支教程");
+        }
+    }
+
+    // -- 分支 1/2 启动手机服务 ------------------------------------------
+    private async Task RenderGuidePhoneStartAsync()
+    {
+        var mob = GuideObj("mobile");
+        bool running = Bool(mob, "running");
+        AddGuideText("手机和电脑连同一个 Wi-Fi。点下面的按钮在本机启动服务，会生成二维码和 6 位 PIN。");
+
+        if (!running)
+        {
+            AddGuideChecklist(new[]
+            {
+                ("服务", "未启动", false),
+                ("下一步", "启动后用手机扫码", false),
+            });
+            _guideBody!.Children.Add(GuideActionButton("启动手机麦克风服务",
+                StartGuideMobileAsync, accent: true));
+            string err = Str(mob, "error");
+            if (err.Length > 0) AddGuideText("上次启动失败：" + err, secondary: true);
+            AddGuideText("服务只在本机开一个端口，不会改系统默认设备。", secondary: true);
+            AddGuideSkip("暂时跳过（改用本机麦克风）",
+                () => SetGuideBranchAsync(false), advance: false);
+            if (_guideNext is not null) _guideNext.IsEnabled = false;
+            return;
+        }
+
+        string ip = Str(mob, "ip");
+        int port = (int)Num(mob, "port", 0);
+        string pin = Str(mob, "pin");
+        AddGuideChecklist(new[]
+        {
+            ("服务", "已启动 ✓", true),
+            ("地址", $"{ip}:{port}", true),
+            ("PIN", pin, true),
+            ("手机端 App", Bool(mob, "apkReady") ? "安装包已就绪" : "未找到 APK，可用网页端", true),
+        });
+
+        await RenderGuideQrAsync();
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        actions.Children.Add(GuideActionButton("复制连接地址", async () =>
+        {
+            var package = new DataPackage();
+            package.SetText(Str(GuideObj("mobile"), "installUrl"));
+            Clipboard.SetContent(package);
+            ShowGuideToast("已复制安装页地址，可发到手机上打开");
+            await Task.CompletedTask;
+        }));
+        actions.Children.Add(GuideActionButton("重新生成二维码", async () =>
+        {
+            _guideQrKey = "";
+            ShowGuideToast("二维码已刷新");
+            await Task.CompletedTask;
+        }));
+        _guideBody!.Children.Add(actions);
+
+        AddGuideText("用手机相机或微信扫「连接」码；没装 App 就先扫「安装」码或从上面的地址下载。",
+                     secondary: true);
+        if (_guideNext is not null) _guideNext.IsEnabled = true;
+    }
+
+    private async Task RenderGuideQrAsync()
+    {
+        JsonElement st = default;
+        try
+        {
+            st = await _client.CallAsync("guide_mobile_status",
+                new JsonObject { ["qr"] = true }, 15000);
+        }
+        catch (Exception ex)
+        {
+            AddGuideText("二维码读取失败：" + ex.Message, secondary: true);
+            return;
+        }
+        string key = Str(st, "pin") + ":" + (int)Num(st, "port", 0);
+        if (_guideQrKey != key)
+        {
+            _guideQrKey = key;
+            _guideQrConnect = await Base64ImageAsync(Str(st, "qrConnect"));
+            _guideQrInstall = await Base64ImageAsync(Str(st, "qrInstall"));
+        }
+        if (_guideQrConnect is null && _guideQrInstall is null)
+        {
+            AddGuideText("二维码生成失败（缺少 segno）。可直接用上面的地址与 PIN 在手机端手动填写。",
+                         secondary: true);
+            return;
+        }
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14 };
+        if (_guideQrConnect is not null)
+            row.Children.Add(GuideQrCard("① 连接（已装 App）", _guideQrConnect));
+        if (_guideQrInstall is not null)
+            row.Children.Add(GuideQrCard("② 安装 / 打开", _guideQrInstall));
+        _guideBody!.Children.Add(row);
+    }
+
+    private static Border GuideQrCard(string caption, ImageSource source)
+    {
+        var panel = new StackPanel { Spacing = 6 };
+        panel.Children.Add(new Border
+        {
+            Background = new SolidColorBrush(Microsoft.UI.Colors.White),
+            Padding = new Thickness(4),
+            CornerRadius = new CornerRadius(4),
+            Child = new Image { Source = source, Width = 120, Height = 120 },
+        });
+        panel.Children.Add(new TextBlock
+        {
+            Text = caption,
+            FontSize = 12,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+        });
+        return new Border
+        {
+            Padding = new Thickness(8),
+            CornerRadius = new CornerRadius(6),
+            Background = (Brush)Application.Current.Resources["LayerFillColorDefaultBrush"],
+            Child = panel,
+        };
+    }
+
+    private async Task StartGuideMobileAsync()
+    {
+        var r = await _client.CallAsync("guide_mobile_start", new JsonObject(), 25000);
+        if (!Bool(r, "running"))
+            throw new InvalidOperationException(
+                Str(r, "error").Length > 0 ? Str(r, "error") : "服务没有启动成功");
+        _guideQrKey = "";
+        ShowGuideToast("手机麦克风服务已启动 ✓");
+    }
+
+    // -- 分支 2/2 确认连接并真正切换输入源 -------------------------------
+    private async Task EnsurePhoneSourceAsync()
+    {
+        if (_guidePhoneReady) return;
+        string source = Str(_guideStatus, "inputSource");
+        // 重走教程时输入源本来就是手机：配置已经对了，不该要求重新连一次才放行。
+        if (source == "mobile") { _guidePhoneReady = true; return; }
+        if (!Bool(_guideStatus, "mobileConnected")) return;
+        try
+        {
+            _guideStatus = await _client.CallAsync("guide_source",
+                new JsonObject { ["inputSource"] = "mobile" }, 15000);
+            _guidePhoneReady = true;
+            ShowGuideToast("已自动把手机设为输入源 ✓");
+        }
+        catch (Exception ex)
+        {
+            ShowGuideToast("切换输入源失败：" + ex.Message);
+        }
+    }
+
+    private void RenderGuidePhoneConnect()
+    {
+        var mob = GuideObj("mobile");
+        bool connected = Bool(_guideStatus, "mobileConnected");
+        string source = Str(_guideStatus, "inputSource");
+        AddGuideText("在手机端点「开始」后，这里会显示连接。连上就自动把手机设为本软件的输入源。");
+
+        string client = Str(mob, "client");
+        double level = Num(mob, "levelDb", -90);
+        AddGuideChecklist(new[]
+        {
+            ("手机连接", connected ? (client.Length > 0 ? client : "已连接 ✓") : "等待手机连接…", connected),
+            ("输入电平", level <= -89 ? "—" : $"{level:0} dB", connected),
+            ("输入源", source == "mobile" ? "手机麦克风（Wi-Fi）✓" : "仍是本机麦克风", source == "mobile"),
+        });
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        actions.Children.Add(GuideActionButton("刷新连接状态", () =>
+        {
+            ShowGuideToast("已刷新");
+            return Task.CompletedTask;
+        }, accent: true));
+        actions.Children.Add(GuideActionButton("打开手机麦克风页", () =>
+        {
+            _guideDialog?.Hide();
+            ShowPage("mic");
+            return Task.CompletedTask;
+        }));
+        _guideBody!.Children.Add(actions);
+
+        if (!connected)
+        {
+            AddGuideText("没连上？确认手机与电脑在同一 Wi-Fi、PIN 没填错，防火墙允许本程序访问局域网。",
+                         secondary: true);
+            _guideBody.Children.Add(GuideActionButton("已连过，直接设为输入源", async () =>
+            {
+                await _client.CallAsync("guide_source",
+                    new JsonObject { ["inputSource"] = "mobile" }, 15000);
+                _guidePhoneReady = true;
+                ShowGuideToast("已把手机设为输入源 ✓");
+            }));
+        }
+
+        AddGuideSkip("改用本机麦克风", () => SetGuideBranchAsync(false), advance: false);
+        if (_guideNext is not null)
+            _guideNext.IsEnabled = _guidePhoneReady || source == "mobile";
+    }
+
+    // -- 录入声纹用于 AI 模型 -------------------------------------------
+    private void RenderGuideVoice()
+    {
+        bool ready = Bool(_guideStatus, "voiceReady");
+        var voice = GuideObj("voice");
+        AddGuideText("AI 档（CPU / GPU）会用你的声纹做特征提取与实时降噪。录 6 秒就能用；"
+                     + "只打算用基础处理的话可以跳过。");
+
+        if (ready)
+        {
+            AddGuideChecklist(new[]
+            {
+                ("声纹文件", $"已录入 {Num(voice, "seconds", 0):0.0} 秒", true),
+                ("AI 档", "可以启用 CPU / GPU 档", true),
+            });
+            _guideBody!.Children.Add(GuideActionButton("重新录一段（6 秒）", StartGuideVoiceAsync));
+            if (_guideNext is not null) _guideNext.IsEnabled = true;
+            return;
+        }
+
+        AddGuideText("录制时按住正常音量朗读一句话即可，例如：「今天的声音测试，一二三四五」。",
+                     secondary: true);
+        AddGuideText("录制会自动占用麦克风；如果引擎正在运行，会先帮你停掉，配完再启动。",
+                     secondary: true);
+
+        var status = new TextBlock
+        {
+            Text = _guideVoiceRecording ? "准备录音…" : "尚未录制",
+            FontSize = 12.5,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+        };
+        var progress = new ProgressBar { Minimum = 0, Maximum = 100, Value = 0 };
+        _guideVoiceStatus = status;
+        _guideVoiceProgress = progress;
+        _guideBody!.Children.Add(progress);
+        _guideBody.Children.Add(status);
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        if (_guideVoiceRecording)
+            actions.Children.Add(GuideActionButton("取消录制", CancelGuideVoiceAsync));
+        else
+            actions.Children.Add(GuideActionButton("开始录制（6 秒）", StartGuideVoiceAsync, accent: true));
+        _guideBody.Children.Add(actions);
+
+        AddGuideSkip("暂时跳过（只用基础处理）");
+        if (_guideNext is not null) _guideNext.IsEnabled = false;
+    }
+
+    private async Task StartGuideVoiceAsync()
+    {
+        var r = await _client.CallAsync("guide_voice_start",
+            new JsonObject { ["seconds"] = 6.0 }, 25000);
+        if (Str(r, "error").Length > 0 && !Bool(r, "recording"))
+            throw new InvalidOperationException(Str(r, "error"));
+        _guideVoiceRecording = true;
+        ShowGuideToast("开始录制，请对着麦克风朗读一句话…");
+        StartGuideVoiceTimer();
+    }
+
+    private async Task CancelGuideVoiceAsync()
+    {
+        try { await _client.CallAsync("guide_voice_cancel", null, 8000); } catch { }
+        StopGuideVoiceTimer();
+        _guideVoiceRecording = false;
+        ShowGuideToast("已取消录制");
+    }
+
+    private void StartGuideVoiceTimer()
+    {
+        _guideVoiceTimer ??= DispatcherQueue.CreateTimer();
+        _guideVoiceTimer.Interval = TimeSpan.FromMilliseconds(200);
+        _guideVoiceTimer.IsRepeating = true;
+        _guideVoiceTimer.Tick -= GuideVoiceTimer_Tick;
+        _guideVoiceTimer.Tick += GuideVoiceTimer_Tick;
+        _guideVoiceTimer.Start();
+    }
+
+    private void StopGuideVoiceTimer()
+    {
+        if (_guideVoiceTimer is not null) _guideVoiceTimer.Stop();
+    }
+
+    private async void GuideVoiceTimer_Tick(DispatcherQueueTimer sender, object args)
+    {
+        if (!_connected || _guideDialog is null) { StopGuideVoiceTimer(); return; }
+        try
+        {
+            var st = await _client.CallAsync("guide_voice_status", null, 8000);
+            bool recording = Bool(st, "recording");
+            bool done = Bool(st, "done");
+            double elapsed = Num(st, "elapsed", 0);
+            double seconds = Num(st, "seconds", 6);
+            string msg = Str(st, "message");
+
+            if (_guideVoiceProgress is not null)
+                _guideVoiceProgress.Value = seconds > 0
+                    ? Math.Clamp(elapsed / seconds * 100, 0, 100) : 0;
+            if (_guideVoiceStatus is not null)
+                _guideVoiceStatus.Text = msg.Length > 0
+                    ? msg : $"录制中… {elapsed:0.0} / {seconds:0.0} 秒";
+
+            if (recording) return;
+
+            StopGuideVoiceTimer();
+            _guideVoiceRecording = false;
+            ShowGuideToast(done
+                ? "声纹已录入 ✓，CPU / GPU 档现在可用"
+                : "录制失败：" + Str(st, "error"));
+            await RenderGuideStepAsync();
+        }
+        catch
+        {
+            StopGuideVoiceTimer();
+            _guideVoiceRecording = false;
+        }
+    }
+
+    // -- 安装 VB-CABLE 驱动（独立一步） ----------------------------------
+    private void RenderGuideCable()
+    {
+        var virt = GuideObj("virtual");
+        bool installed = Bool(_guideStatus, "virtualInstalled");
+        AddGuideText("处理完的人声要写进一条虚拟音频线，OBS / 会议软件从另一端采集。"
+                     + "这条线由 VB-CABLE 驱动提供，先把它装好。");
+
+        if (installed)
+        {
+            AddGuideChecklist(new[]
+            {
+                ("CABLE Input", Str(_guideStatus, "cableInLabel"), true),
+                ("驱动状态", "已检测到虚拟声卡 ✓", true),
+            });
+            AddGuideText("下一步只要把输出选到 CABLE Input 就行。", secondary: true);
+            if (_guideNext is not null) _guideNext.IsEnabled = true;
+            return;
+        }
+
+        AddGuideChecklist(new[]
+        {
+            ("CABLE Input", "未检测到", false),
+            ("安装方式", "官方安装包，手动以管理员身份运行", false),
+        });
+        AddGuideText("① 打开官方页面或本机已有的官方安装包 → ② 右键 Setup_x64.exe 以管理员身份运行"
+                     + " → ③ 重启电脑 → ④ 回来点「重新检测」。", secondary: true);
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        actions.Children.Add(GuideActionButton("打开官网下载页", () => OpenGuideCableAsync("download"),
+                                               accent: true));
+        if (Bool(virt, "packPresent"))
+            actions.Children.Add(GuideActionButton("打开本机官方安装器",
+                () => OpenGuideCableAsync("installer")));
+        actions.Children.Add(GuideActionButton("重新检测", () =>
+        {
+            ShowGuideToast("已重新检测设备");
+            return Task.CompletedTask;
+        }));
+        _guideBody!.Children.Add(actions);
+
+        string hint = Str(virt, "hint");
+        if (hint.Length > 0) AddGuideText(hint, secondary: true);
+        string note = Str(virt, "driverNote");
+        if (note.Length > 0) AddGuideText(note, secondary: true);
+        AddGuideText("本软件不随包分发、也不会自动运行驱动安装器；安装与卸载完全由你手动完成。",
+                     secondary: true);
+
+        AddGuideSkip("暂时跳过，稍后再装");
+        if (_guideNext is not null) _guideNext.IsEnabled = false;
+    }
+
+    private async Task OpenGuideCableAsync(string mode)
+    {
+        var r = await _client.CallAsync("guide_cable_open",
+            new JsonObject { ["mode"] = mode }, 12000);
+        string hint = Str(r, "hint");
+        ShowGuideToast(hint.Length > 0 ? hint : "已打开官方页面");
+    }
+
+    // -- 选输出到虚拟声卡 ------------------------------------------------
     private void RenderGuideOutput()
     {
         bool virtualInstalled = Bool(_guideStatus, "virtualInstalled");
         if (!virtualInstalled)
-        {
-            AddGuideText("没检测到 VB-CABLE 虚拟声卡，这一步需要它才能把声音送进 OBS。");
-            var get = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-            get.Children.Add(GuideActionButton("打开 VB-CABLE 官网", () =>
-            {
-                try
-                {
-                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
-                        "https://vb-audio.com/Cable/") { UseShellExecute = true });
-                }
-                catch (Exception ex) { ShowError(ex.Message); }
-                return Task.CompletedTask;
-            }, accent: true));
-            _guideBody!.Children.Add(get);
-            AddGuideText("装完重启本程序，再从这一步继续。", secondary: true);
-            return;
-        }
+            AddGuideText("上一步的 CABLE 驱动还没装好，下面的列表里可能找不到 CABLE Input。",
+                         secondary: true);
 
         AddGuideText("输出要选 CABLE Input（注意是 Input）——这是本软件写入、OBS 去读的那一端。");
 
@@ -1612,21 +2147,113 @@ def process(x, sr, params):
         {
             // 没选过：直接预选 CABLE Input（列表里标了「← 选这个」）。
             var preset = ((List<GuideDevice>)combo.ItemsSource).FirstOrDefault(d => d.IsCable);
-            if (preset is not null)
+            if (preset is not null && _guideAutoPicked.Add("outputDevice"))
             {
                 AddGuideText("已为你预选 CABLE Input，确认无误就点「下一步」。", secondary: true);
                 _ = SaveGuideDeviceAsync("outputDevice", preset.Id);
             }
             else
             {
-                AddGuideText("还没有选择输出。", secondary: true);
+                AddGuideText("还没有选择输出。请从上面的下拉框选 CABLE Input；"
+                             + "列表里没有它时，先回上一步装驱动。", secondary: true);
             }
         }
 
+        if (!ready) AddGuideSkip("暂时跳过，稍后再选");
         if (_guideNext is not null) _guideNext.IsEnabled = ready;
     }
 
-    // -- 3 启动引擎 -----------------------------------------------------
+    // -- 音质档：下拉框 --------------------------------------------------
+    private void RenderGuideQuality()
+    {
+        string aiMode = Str(_guideStatus, "aiMode");
+        bool gpu = Bool(_guideStatus, "gpuAvailable");
+        bool voice = Bool(_guideStatus, "voiceReady");
+
+        AddGuideText("用下拉框选一档，选完立刻写入配置；之后随时能在「主控」页改。");
+        var options = new List<GuideQualityItem>
+        {
+            new() { Value = "off", Label = "关闭 —— 只做基础处理，最省资源，最稳", Enabled = true },
+            new() { Value = "cpu", Label = "CPU 档 —— 声纹提取 + 实时降噪，人声更干净（推荐）",
+                    Enabled = voice },
+            new() { Value = "gpu", Label = "GPU 档 —— 效果最强，占用显存",
+                    Enabled = gpu && voice },
+        };
+        // 逐项建 ComboBoxItem 才能真正把不可用档位置灰；用 ItemsSource 时
+        // 不可用项仍然可以点选，只会弹一句报错，体验很糟。
+        var combo = new ComboBox
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            MinWidth = 430,
+        };
+        ComboBoxItem? current = null;
+        ComboBoxItem? fallback = null;
+        foreach (var option in options)
+        {
+            var item = new ComboBoxItem
+            {
+                Content = option.Display,
+                Tag = option.Value,
+                IsEnabled = option.Enabled,
+            };
+            combo.Items.Add(item);
+            if (option.Value == "off") fallback = item;
+            if (option.Value == aiMode && option.Enabled) current = item;
+        }
+        object? selected = current ?? (object?)fallback;
+        if (selected is null && combo.Items.Count > 0) selected = combo.Items[0];
+        combo.SelectedItem = selected;
+        combo.SelectionChanged += async (_, _) =>
+        {
+            if (_guideRendering || _guideBusy) return;
+            if (combo.SelectedItem is not ComboBoxItem picked) return;
+            string value = picked.Tag as string ?? "";
+            if (value.Length == 0 || value == aiMode) return;
+            var option = options.FirstOrDefault(o => o.Value == value);
+            if (option is null) return;
+            await RunGuideActionAsync(() => SetGuideQualityAsync(option));
+        };
+        _guideBody!.Children.Add(combo);
+        if (current is null && aiMode != "off")
+            AddGuideText($"当前配置是 {aiMode.ToUpperInvariant()} 档，但条件已不满足；"
+                         + "请在上面重新选一档写入配置。", secondary: true);
+
+        if (!voice)
+            AddGuideText("还没录声纹，CPU / GPU 档暂时选不了。可以先回去录 6 秒，或先用「关闭」档。",
+                         secondary: true);
+        else if (!gpu)
+            AddGuideText("本机没有可用的 CUDA 环境，GPU 档暂不可用；CPU 档效果已经够用。",
+                         secondary: true);
+        else
+            AddGuideText("声纹与 GPU 都已就绪，三档都可以选。", secondary: true);
+
+        if (!voice)
+            _guideBody.Children.Add(GuideActionButton("回去录声纹",
+                () => GoToGuideStepAsync(GuideStep.Voice)));
+
+        if (_guideNext is not null) _guideNext.IsEnabled = true;
+    }
+
+    private async Task SetGuideQualityAsync(GuideQualityItem item)
+    {
+        if (!item.Enabled)
+            throw new InvalidOperationException(
+                item.Value == "gpu"
+                    ? "GPU 档需要可用 CUDA 环境和声纹，请先选 CPU 或关闭。"
+                    : "还没有 AI 声纹，请先回去录 6 秒，或先选「关闭」档。");
+        await _client.CallAsync("guide_quality",
+            new JsonObject { ["aiMode"] = item.Value }, 25000);
+        ShowGuideToast("已切换到「" + item.Value.ToUpperInvariant() + "」档 ✓");
+    }
+
+    private Task GoToGuideStepAsync(GuideStep kind)
+    {
+        int index = _guideSteps.IndexOf(kind);
+        if (index >= 0) _guideStep = index;
+        return Task.CompletedTask;
+    }
+
+    // -- 启动引擎 --------------------------------------------------------
     private void RenderGuideEngine()
     {
         bool running = Bool(_guideStatus, "engineRunning");
@@ -1640,6 +2267,7 @@ def process(x, sr, params):
             {
                 ("引擎", "运行中 ✓", true),
                 ("输出", Str(_guideStatus, "outputLabel"), Bool(_guideStatus, "outputReady")),
+                ("音质档", aiMode == "off" ? "关闭" : aiMode.ToUpperInvariant(), true),
             });
             if (_guideNext is not null) _guideNext.IsEnabled = true;
             return;
@@ -1650,19 +2278,15 @@ def process(x, sr, params):
         // 提前拦住必然失败的启动：AI 档需要声纹。
         if (aiMode != "off" && !voice)
         {
-            AddGuideText("当前音质档是 AI 档，但还没录声纹，直接启动会失败。可以先录声纹，或下一步先把 AI 关掉。",
+            AddGuideText("当前音质档是 AI 档，但还没录声纹，直接启动会失败。可以先录声纹，或先把 AI 关掉。",
                          secondary: true);
             var fix = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-            fix.Children.Add(GuideActionButton("去录制声纹", () =>
-            {
-                _guideDialog?.Hide();
-                ShowPage("settings");
-                return Task.CompletedTask;
-            }));
+            fix.Children.Add(GuideActionButton("回去录声纹",
+                () => GoToGuideStepAsync(GuideStep.Voice)));
             fix.Children.Add(GuideActionButton("先切到关闭档", async () =>
             {
-                await _client.CallAsync("set_options",
-                    new JsonObject { ["aiMode"] = "off" }, 10000);
+                await _client.CallAsync("guide_quality",
+                    new JsonObject { ["aiMode"] = "off" }, 15000);
                 ShowGuideToast("已切到「关闭」档，现在可以启动了 ✓");
             }));
             _guideBody!.Children.Add(fix);
@@ -1676,70 +2300,12 @@ def process(x, sr, params):
         }, accent: true));
         _guideBody!.Children.Add(actions);
 
-        AddGuideText("启动成功后点「下一步」。", secondary: true);
+        AddGuideText("启动成功后点「下一步」。还差设备没配好时会提示具体原因。", secondary: true);
+        if (!running) AddGuideSkip("暂时跳过，稍后手动启动");
         if (_guideNext is not null) _guideNext.IsEnabled = running;
     }
 
-    // -- 4 音质档 -------------------------------------------------------
-    private void RenderGuideQuality()
-    {
-        string aiMode = Str(_guideStatus, "aiMode");
-        bool gpu = Bool(_guideStatus, "gpuAvailable");
-        bool voice = Bool(_guideStatus, "voiceReady");
-
-        AddGuideText("选一档就行，之后随时能在「主控」页改。");
-
-        var options = new StackPanel { Spacing = 6 };
-        options.Children.Add(GuideRadio(
-            "关闭 —— 只做基础处理，最省资源，最稳",
-            aiMode == "off",
-            async () =>
-            {
-                await _client.CallAsync("set_options",
-                    new JsonObject { ["aiMode"] = "off" }, 10000);
-                ShowGuideToast("已选「关闭」✓");
-            }));
-        options.Children.Add(GuideRadio(
-            "CPU 档 —— 声纹提取 + 实时降噪，人声更干净（推荐）" + (voice ? "" : "（需先录声纹）"),
-            aiMode == "cpu",
-            async () =>
-            {
-                if (!voice)
-                    throw new InvalidOperationException(
-                        "还没有 AI 声纹。请到「设置 → AI 声纹」录 6 秒后再选这一档。");
-                await _client.CallAsync("set_options",
-                    new JsonObject { ["aiMode"] = "cpu" }, 10000);
-                ShowGuideToast("已选 CPU 档 ✓");
-            }));
-        options.Children.Add(GuideRadio(
-            "GPU 档 —— 效果最强，占用显存" + (gpu ? "" : "（本机不可用）"),
-            aiMode == "gpu",
-            async () =>
-            {
-                if (!gpu)
-                    throw new InvalidOperationException("本机 GPU 档不可用，请选 CPU 或关闭。");
-                if (!voice)
-                    throw new InvalidOperationException(
-                        "还没有 AI 声纹。请到「设置 → AI 声纹」录 6 秒后再选这一档。");
-                await _client.CallAsync("set_options",
-                    new JsonObject { ["aiMode"] = "gpu" }, 15000);
-                ShowGuideToast("已选 GPU 档 ✓");
-            }));
-        _guideBody!.Children.Add(options);
-
-        if (!voice)
-        {
-            _guideBody.Children.Add(GuideActionButton("去录制声纹（6 秒）", () =>
-            {
-                _guideDialog?.Hide();
-                ShowPage("settings");
-                return Task.CompletedTask;
-            }));
-        }
-        if (_guideNext is not null) _guideNext.IsEnabled = true;
-    }
-
-    // -- 5 OBS ----------------------------------------------------------
+    // -- OBS -------------------------------------------------------------
     private void RenderGuideObs()
     {
         AddGuideText("最后在 OBS（或会议软件）里把声音接过来，这一步在别的软件里操作。");
@@ -1753,9 +2319,9 @@ def process(x, sr, params):
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         actions.Children.Add(GuideActionButton("复制 CABLE Output", async () =>
         {
-            var package = new Windows.ApplicationModel.DataTransfer.DataPackage();
+            var package = new DataPackage();
             package.SetText("CABLE Output (VB-Audio Virtual Cable)");
-            Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(package);
+            Clipboard.SetContent(package);
             ShowGuideToast("已复制设备名，去 OBS 里粘贴选择");
             await Task.CompletedTask;
         }, accent: true));
@@ -1770,45 +2336,49 @@ def process(x, sr, params):
         if (_guideNext is not null) _guideNext.IsEnabled = true;
     }
 
-    // -- 6 完成 ---------------------------------------------------------
+    // -- 完成 ------------------------------------------------------------
     private void RenderGuideDone()
     {
-        bool devicesReady = Bool(_guideStatus, "inputReady") && Bool(_guideStatus, "outputReady");
         bool running = Bool(_guideStatus, "engineRunning");
+        bool cable = Bool(_guideStatus, "virtualInstalled");
+        bool voice = Bool(_guideStatus, "voiceReady");
+        string source = Str(_guideStatus, "inputSource");
         AddGuideText("按清单确认一下，打勾就可以开播了。");
 
-        AddGuideChecklist(new[]
+        var rows = new List<(string Name, string Value, bool Ok)>
         {
+            ("输入方式", source == "mobile" ? "手机麦克风（Wi-Fi）" : "本机麦克风", true),
             ("麦克风", Str(_guideStatus, "inputLabel"), Bool(_guideStatus, "inputReady")),
+            ("CABLE 驱动", cable ? "已安装" : "未检测到", cable),
             ("输出", Str(_guideStatus, "outputLabel"), Bool(_guideStatus, "outputReady")),
-            ("引擎", running ? "运行中" : "已停止", running),
+            ("AI 声纹", voice ? $"已录入 {Num(GuideObj("voice"), "seconds", 0):0.0} 秒" : "未录制", voice),
             ("音质档", Str(_guideStatus, "aiMode") switch
             {
                 "cpu" => "CPU 档",
                 "gpu" => "GPU 档",
                 _ => "关闭",
             }, true),
-            ("AI 声纹", Bool(_guideStatus, "voiceReady") ? "已就绪" : "未录制",
-                Bool(_guideStatus, "voiceReady")),
-        });
+            ("引擎", running ? "运行中" : "已停止", running),
+        };
+        if (source == "mobile")
+            rows.Add(("手机连接", Bool(_guideStatus, "mobileConnected") ? "已连接" : "未连接",
+                      Bool(_guideStatus, "mobileConnected")));
+        AddGuideChecklist(rows.ToArray());
 
         var missing = new List<string>();
         if (!Bool(_guideStatus, "inputReady")) missing.Add("麦克风");
+        if (!cable) missing.Add("CABLE 驱动");
         if (!Bool(_guideStatus, "outputReady")) missing.Add("输出");
         if (!running) missing.Add("引擎");
         if (missing.Count > 0)
-            AddGuideText("还差：" + string.Join("、", missing) + "。可以点「上一步」回去补。",
-                         secondary: true);
+            AddGuideText("还差：" + string.Join("、", missing) + "。可以点「上一步」回去补，"
+                         + "或重走一次新手教程。", secondary: true);
         else
             AddGuideText("都配好了 —— 现在打开 OBS 添加音频输入采集即可。", secondary: true);
 
-        AddGuideText("随时可以点左下角「新手教程」重走，或到「设置」里改 Python 与声纹。",
+        AddGuideText("侧边栏「新手教程」可随时重走；Python 路径、声纹、手机端口在「设置」里改。",
                      secondary: true);
-        if (_guideNext is not null)
-        {
-            // 前六步都过了，这里只需完成；缺项时也允许关闭。
-            _guideNext.IsEnabled = true;
-        }
+        if (_guideNext is not null) _guideNext.IsEnabled = true;
     }
 
     // -- 引导用的 UI 组件 -----------------------------------------------
@@ -1878,7 +2448,7 @@ def process(x, sr, params):
         }
     }
 
-    /// <summary>单选项：点一下切档，选中态用强调色点标出来。</summary>
+    /// <summary>单选项：点一下切换，选中态用强调色点标出来。</summary>
     private Border GuideRadio(string text, bool selected, Func<Task> onPick)
     {
         var grid = new Grid { ColumnSpacing = 10 };
@@ -1990,6 +2560,16 @@ def process(x, sr, params):
         return button;
     }
 
+    /// <summary>「暂时跳过」：可选地先写点配置，再前进到下一步。</summary>
+    private void AddGuideSkip(string text, Func<Task>? before = null, bool advance = true)
+    {
+        _guideBody!.Children.Add(GuideActionButton(text, async () =>
+        {
+            if (before is not null) await before();
+            if (advance && _guideStep < _guideSteps.Count - 1) _guideStep++;
+        }));
+    }
+
     private async Task RunGuideActionAsync(Func<Task> action, Button? sender = null)
     {
         if (_guideBusy) return;
@@ -2036,6 +2616,13 @@ def process(x, sr, params):
 
     private async Task FinishTutorialAsync()
     {
+        _guideFinished = true;
+        StopGuideVoiceTimer();
+        if (_guideVoiceRecording && _connected)
+        {
+            try { await _client.CallAsync("guide_voice_cancel", null, 8000); } catch { }
+        }
+        _guideVoiceRecording = false;
         _guideDialog?.Hide();
         if (!_connected) return;
         try

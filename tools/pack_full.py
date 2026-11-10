@@ -121,17 +121,39 @@ def main() -> int:
     return 0
 
 
+LAUNCHER = (
+    "@echo off\r\n"
+    "rem Record Out Mixer - portable launcher\r\n"
+    "title Record Out Mixer\r\n"
+    "cd /d \"%~dp0\"\r\n"
+    "\r\n"
+    "if not exist \"RecordOutMixer\\RecordOutMixer.exe\" goto missing\r\n"
+    "if not exist \"mixer_service\\mixer_service.exe\" goto broken\r\n"
+    "\r\n"
+    "start \"\" \"RecordOutMixer\\RecordOutMixer.exe\"\r\n"
+    "exit /b 0\r\n"
+    "\r\n"
+    ":broken\r\n"
+    "echo.\r\n"
+    "echo   [ERROR] Incomplete package: mixer_service\\mixer_service.exe not found.\r\n"
+    "echo   Please re-extract the whole folder.\r\n"
+    "echo.\r\n"
+    "pause\r\n"
+    "exit /b 1\r\n"
+    "\r\n"
+    ":missing\r\n"
+    "echo.\r\n"
+    "echo   [ERROR] RecordOutMixer\\RecordOutMixer.exe not found.\r\n"
+    "echo   Please re-extract the whole folder.\r\n"
+    "echo.\r\n"
+    "pause\r\n"
+    "exit /b 1\r\n"
+)
+
+
 def write_launchers() -> None:
-    (DEST / "启动调音台.bat").write_text(
-        "@echo off\r\n"
-        "cd /d \"%~dp0\"\r\n"
-        "start \"\" \"RecordOutMixer\\RecordOutMixer.exe\"\r\n",
-        encoding="utf-8")
-    (DEST / "start_mixer.bat").write_text(
-        "@echo off\r\n"
-        "cd /d \"%~dp0\"\r\n"
-        "start \"\" \"RecordOutMixer\\RecordOutMixer.exe\"\r\n",
-        encoding="utf-8")
+    for name in ("启动调音台.bat", "start_mixer.bat"):
+        (DEST / name).write_text(LAUNCHER, encoding="utf-8")
     (DEST / "README.txt").write_text(README, encoding="utf-8")
 
 
@@ -150,7 +172,10 @@ README = """Record Out 直播调音台 · 完整版（免安装）
     gpu_packages\\            可选的 CUDA PyTorch（界面点「下载 GPU 支持」后生成）
 
 使用步骤
-  1. 物理麦克风选择你的麦克风；输出选择 CABLE Input（VB-Audio Virtual Cable）。
+  0. 第一次打开会自动弹出新手引导，一步步带你配好；侧边栏「新手教程」可随时重走。
+     引导顺序：选麦克风（本机 / 手机当麦克风分支）→ 录声纹 → 安装 VB-CABLE
+     → 选 CABLE Input → 下拉框选音质档 → 启动引擎 → OBS 采集。每步都会当场写进配置。
+  1. 手动配置时：输入选你的麦克风；输出选 CABLE Input（VB-Audio Virtual Cable）。
   2. 点“启动”，再点“扫描 / 添加”加载 VST3 效果器（Ozone、Pro-Q 等均可）。
   3. OBS 中从 CABLE Output 采集本路音频。
 

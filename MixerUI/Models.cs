@@ -46,6 +46,18 @@ public sealed class GuideDevice
     public override string ToString() => Display;
 }
 
+/// <summary>新手引导「音质档」下拉项；不可用的档位会在文字里说明原因。</summary>
+public sealed class GuideQualityItem
+{
+    public string Value { get; init; } = "off";
+    public string Label { get; init; } = "";
+    public bool Enabled { get; init; } = true;
+
+    public string Display => Enabled ? Label : Label + "   （当前不可用）";
+
+    public override string ToString() => Display;
+}
+
 public sealed class PluginItem
 {
     public int Index { get; init; }

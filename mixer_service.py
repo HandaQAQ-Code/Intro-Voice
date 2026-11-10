@@ -35,6 +35,9 @@ from app_paths import ROOT, DATA
 MIXER_DATA = DATA / "mixer"
 PRESET_DIR = MIXER_DATA / "presets"
 SETTINGS_FILE = MIXER_DATA / "settings.json"
+# 与 live_voice.PROFILE 保持一致。引导/设置页只是查文件在不在，
+# 不应为此 import live_voice（会连带加载 onnxruntime，内存紧张时直接失败）。
+VOICE_PROFILE = DATA / "target.wav"
 DLL_PATH = ROOT / "native" / "bin" / "vst3host.dll"
 LOG = logging.getLogger("mixer_service")
 
@@ -544,6 +547,24 @@ def gpu_capability() -> tuple[bool, str]:
         return True, str(torch.cuda.get_device_name(0))
     except Exception as exc:
         return False, f"CUDA 初始化失败：{exc}"
+
+
+_GUIDE_GPU_CACHE: dict = {"at": 0.0, "value": (False, "")}
+
+
+def guide_gpu_capability() -> tuple[bool, str]:
+    """引导每一步都要问一次 GPU；torch 首次 import 可能好几秒，短时缓存避免每步都卡。
+
+    只给引导的状态展示用；真正切到 GPU 档时仍走实时 gpu_capability()。
+    """
+    import time
+    now = time.monotonic()
+    if now - _GUIDE_GPU_CACHE["at"] < 60.0:
+        return _GUIDE_GPU_CACHE["value"]
+    value = gpu_capability()
+    _GUIDE_GPU_CACHE["at"] = now
+    _GUIDE_GPU_CACHE["value"] = value
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -1164,6 +1185,10 @@ class Service:
         cable = next((o["label"] for o in cable_candidates if o["host"] == "Windows WASAPI"), "")
         if not cable and cable_candidates:
             cable = cable_candidates[0]["label"]
+        # cable 下面会兜底成任意 WASAPI 输出，供旧界面显示；引导必须区分
+        # 「真的有 CABLE 端点」和「只是随便找了个输出」，所以单独留一份真实值。
+        cable_real = cable
+        cable_detected = bool(cable_candidates)
         default_input = ""
         wasapi_inputs = [i for i in inputs if i["host"] == "Windows WASAPI"]
         try:
@@ -1188,6 +1213,7 @@ class Service:
             LOG.warning("虚拟声卡检测失败：%s", exc)
             virtual = {"installed": bool(cable), "render": None, "capture": None}
         return {"inputs": inputs, "outputs": outputs, "cableOutput": cable,
+                "cableReal": cable_real, "cableDetected": cable_detected,
                 "inputDefault": default_input, "virtual": virtual}
 
     def _drain_events(self) -> None:
@@ -1364,8 +1390,46 @@ class Service:
             except Exception:
                 out_is_cable = False
         virtual = devices.get("virtual") or {}
-        from live_voice import PROFILE
-        gpu_ok, _gpu_note = gpu_capability()
+        # 引导专用补充状态：驱动安装、声纹、手机麦克风。
+        # 全部做异常兜底，任一子系统没就绪也不能让整个引导白屏。
+        pack = virtual.get("pack") or {}
+        virtual_info = {
+            "installed": bool(virtual.get("installed"))
+                         or bool(devices.get("cableDetected")),
+            "packPresent": bool(pack.get("present")),
+            "packDir": str(pack.get("dir") or ""),
+            "vendorUrl": str(virtual.get("vendorUrl") or virtual_device.VENDOR_URL),
+            "downloadUrl": str(virtual.get("downloadUrl") or virtual_device.DOWNLOAD_URL),
+            "hint": str(virtual.get("hint") or ""),
+            "driverNote": str(virtual.get("driverNote") or virtual_device.DRIVER_NOTE),
+        }
+        try:
+            voice_info = self.cmd_voice_info(request)
+        except Exception as exc:
+            LOG.warning("引导：声纹信息读取失败 %s", exc)
+            voice_info = {"exists": False, "seconds": 0.0, "sizeMb": 0.0, "path": ""}
+        try:
+            mic_status = self.mic_server.status()
+            mic_metrics = mic_status.get("mic") or {}
+        except Exception as exc:
+            LOG.warning("引导：手机麦克风状态读取失败 %s", exc)
+            mic_status, mic_metrics = {}, {}
+        source = str(settings.get("inputSource", "device"))
+        mobile_connected = int(mic_metrics.get("clients") or 0) > 0
+        mobile_info = {
+            "running": bool(mic_status.get("running")),
+            "ip": str(mic_status.get("ip") or ""),
+            "port": int(mic_status.get("port") or 0),
+            "pin": str(mic_status.get("pin") or ""),
+            "installUrl": str(mic_status.get("installUrl") or ""),
+            "deepLink": str(mic_status.get("deepLink") or ""),
+            "apkReady": bool(mic_status.get("apkReady")),
+            "error": str(mic_status.get("error") or ""),
+            "clients": int(mic_metrics.get("clients") or 0),
+            "client": str(mic_metrics.get("client") or ""),
+            "levelDb": float(mic_metrics.get("levelDb") or -90.0),
+        }
+        gpu_ok, _gpu_note = guide_gpu_capability()
         def slim(items, current_id=-1):
             """给下拉框用的精简列表：优先只留 WASAPI 端点。
 
@@ -1400,21 +1464,27 @@ class Service:
             "inputs": slim(devices.get("inputs") or [], in_id),
             "outputs": slim(devices.get("outputs") or [], out_id),
             "inputDevice": in_id,
-            "inputLabel": in_label,
-            "inputReady": in_id >= 0 and bool(in_label),
+            # 手机当麦克风时没有本机设备，别让完成页误报「还差：麦克风」。
+            "inputLabel": "手机麦克风（Wi-Fi）" if source == "mobile" else in_label,
+            "inputReady": mobile_connected if source == "mobile"
+                          else (in_id >= 0 and bool(in_label)),
             "outputDevice": out_id,
             "outputLabel": out_label,
             "outputReady": out_is_cable,
-            # cableOutput 有值就说明 CABLE Input 端点存在，比 virtual.installed 更稳。
-            "virtualInstalled": bool(virtual.get("installed"))
-                                or bool(devices.get("cableOutput")),
-            "cableInLabel": devices.get("cableOutput") or "",
+            # 不能用 cableOutput 判断：它在没有 CABLE 时会兜底成任意 WASAPI 输出。
+            "virtualInstalled": virtual_info["installed"],
+            "virtual": virtual_info,
+            "cableInLabel": devices.get("cableReal") or "",
             "suggestInputLabel": devices.get("inputDefault") or "",
             "engineRunning": bool(self.engine and self.engine.thread
                                   and self.engine.thread.is_alive()),
             "aiMode": str(settings.get("aiMode", "off")),
             "gpuAvailable": gpu_ok,
-            "voiceReady": PROFILE.is_file(),
+            "voiceReady": VOICE_PROFILE.is_file(),
+            "voice": voice_info,
+            "inputSource": source,
+            "mobile": mobile_info,
+            "mobileConnected": mobile_connected,
             "workshopCount": len(self._workshop_slugs() or []),
         }
 
@@ -1422,7 +1492,7 @@ class Service:
         """一键自动选好输入（系统默认麦克风）与输出（CABLE Input）。"""
         devices = self._devices()
         in_label = devices.get("inputDefault") or ""
-        out_label = devices.get("cableOutput") or ""
+        out_label = devices.get("cableReal") or ""
         if not out_label:
             virtual = devices.get("virtual") or {}
             raise RuntimeError(
@@ -1441,6 +1511,88 @@ class Service:
             "output": out_label,
         })
         self._save_settings()
+        return self.cmd_guide_status(request)
+
+    # -- 引导里的动作：统一在这里包一层，前端就不必到处拼命令 ---------------
+    def cmd_guide_voice_start(self, request):
+        """录声纹前先停链路：引擎占着麦克风时录音必然失败。
+
+        stop() 只是置停止事件，必须等音频线程真的退出，否则紧接着的
+        voice_record_start 仍会看到 thread.is_alive() 而拒绝录音。
+        """
+        if self.engine and self.engine.thread and self.engine.thread.is_alive():
+            thread = self.engine.thread
+            self.cmd_stop(request)
+            thread.join(timeout=5.0)
+            if thread.is_alive():
+                raise RuntimeError("引擎还在停止中，请稍等两秒再录声纹")
+        return self.cmd_voice_record_start(request)
+
+    def cmd_guide_voice_status(self, request):
+        return self.cmd_voice_record_status(request)
+
+    def cmd_guide_voice_cancel(self, request):
+        return self.cmd_voice_record_cancel(request)
+
+    def cmd_guide_cable_open(self, request):
+        """打开官方安装器所在文件夹，或打开官方下载页（绝不自动运行 Setup）。"""
+        if str(request.get("mode") or "") == "installer":
+            return virtual_device.open_installer()
+        return virtual_device.open_download()
+
+    def cmd_guide_mobile_start(self, request):
+        return self.cmd_mic_start(request)
+
+    def cmd_guide_mobile_status(self, request):
+        return self.cmd_mic_status(request)
+
+    def cmd_guide_source(self, request):
+        """引导里切换输入源：本机设备 / 手机麦克风。"""
+        source = str(request.get("inputSource") or "")
+        if source not in ("device", "mobile"):
+            raise RuntimeError("输入源无效")
+        # 运行中的链路已经绑定了输入流，改设置不会即时生效；先停掉，
+        # 引导后面的「启动引擎」步会用新的输入源重新起。
+        if self.engine and self.engine.thread and self.engine.thread.is_alive():
+            thread = self.engine.thread
+            self.cmd_stop(request)
+            thread.join(timeout=5.0)
+        self.cmd_set_options({"inputSource": source})
+        if self.engine:
+            self.engine.input_source = source
+        if source == "mobile":
+            self.settings["input"] = "手机麦克风（Wi-Fi）"
+        else:
+            dev_id = int(self.settings.get("inputDevice", -1))
+            try:
+                self.settings["input"] = device_label(dev_id) if dev_id >= 0 else ""
+            except Exception:
+                self.settings["input"] = ""
+        self._save_settings()
+        return self.cmd_guide_status(request)
+
+    def cmd_guide_quality(self, request):
+        """引导里的下拉框选档：把不合法的组合挡在后端。"""
+        mode = str(request.get("aiMode") or "off")
+        if mode not in ("off", "cpu", "gpu"):
+            raise RuntimeError("音质档无效")
+        if mode in ("cpu", "gpu"):
+            if not VOICE_PROFILE.is_file():
+                raise RuntimeError("还没有 AI 声纹，请先录 6 秒声纹，或选「关闭」档")
+        if mode == "gpu":
+            gpu_ok, note = gpu_capability()
+            if not gpu_ok:
+                raise RuntimeError("本机 GPU 档不可用：" + note)
+        # 运行中的链路是按档位构建的，set_options 会试图当场 stop/start 重建。
+        # 引导里设备可能还没配齐，重建必然报错；这里先停掉，后面的「启动引擎」
+        # 步骤会用新档位重新起，行为更可预期。
+        if self.engine and self.engine.thread and self.engine.thread.is_alive():
+            thread = self.engine.thread
+            self.cmd_stop(request)
+            thread.join(timeout=5.0)
+            if thread.is_alive():
+                raise RuntimeError("引擎还在停止中，请稍等两秒再切换音质档")
+        self.cmd_set_options({"aiMode": mode})
         return self.cmd_guide_status(request)
 
     def _workshop_slugs(self) -> list[str]:
@@ -1604,15 +1756,14 @@ class Service:
 
     def cmd_voice_info(self, request):
         """返回当前声纹文件信息，供界面展示是否已有声纹。"""
-        from live_voice import PROFILE
-        info = {"path": str(PROFILE), "exists": PROFILE.is_file(),
+        info = {"path": str(VOICE_PROFILE), "exists": VOICE_PROFILE.is_file(),
                 "seconds": 0.0, "sizeMb": 0.0}
-        if PROFILE.is_file():
+        if VOICE_PROFILE.is_file():
             try:
                 import soundfile as sf
-                meta = sf.info(str(PROFILE))
+                meta = sf.info(str(VOICE_PROFILE))
                 info["seconds"] = float(meta.duration)
-                info["sizeMb"] = round(PROFILE.stat().st_size / 1024 / 1024, 2)
+                info["sizeMb"] = round(VOICE_PROFILE.stat().st_size / 1024 / 1024, 2)
             except Exception:
                 pass
         return info
@@ -1650,8 +1801,7 @@ class Service:
         elif cfg["inputDevice"] < 0:
             raise RuntimeError("尚未选择输入设备：请在「主控」页选麦克风，或点「新手教程 → 一键自动配置」。")
         if cfg["aiMode"] != "off":
-            from live_voice import PROFILE
-            if not PROFILE.is_file():
+            if not VOICE_PROFILE.is_file():
                 raise RuntimeError("AI 档需要你的声纹：请到「设置 → AI 声纹」点「开始录制」录 6 秒，或先把 AI 档切到「关闭」。")
         if cfg["outputDevice"] < 0:
             raise RuntimeError("尚未选择输出设备：请在「主控」页选 CABLE Input，或点「新手教程 → 一键自动配置」。")
@@ -1686,6 +1836,24 @@ class Service:
 
     def cmd_set_options(self, request):
         o = self.engine.options
+        if "aiMode" in request:
+            # 以前 set_options 会静默丢掉 aiMode，导致引导里切档其实没生效。
+            mode = str(request["aiMode"])
+            if mode not in ("off", "cpu", "gpu"):
+                raise RuntimeError("AI 模式无效")
+            self.settings["aiMode"] = mode
+            self._save_settings()
+            if self.engine:
+                self.engine.ai_mode = mode
+                if self.engine.thread and self.engine.thread.is_alive():
+                    # 运行中的 AI 流水线是按档位构建的，换档必须重建链路。
+                    thread = self.engine.thread
+                    self.engine.stop()
+                    thread.join(timeout=4.0)
+                    if thread.is_alive():
+                        raise RuntimeError("引擎正在停止，请稍后再切换音质档")
+                    self.engine.start(self._start_config({}, self.settings))
+                    return {"ok": True, "restarted": True}
         if "muted" in request:
             o.muted = bool(request["muted"])
         if "gainDb" in request:
