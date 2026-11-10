@@ -116,6 +116,11 @@
                         <FontIcon Glyph="&#xE897;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <NavigationViewItem Content="设置" Tag="settings">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE713;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
             </NavigationView.MenuItems>
 
             <NavigationView.PaneFooter>
@@ -811,11 +816,11 @@
                                 </Border>
                             </StackPanel>
                             <TextBlock Style="{StaticResource HintText}"
-                                       Text="不会写代码也能做插件：挑一个模板，拖动两个滑块，保存就生效。" />
+                                       Text="点「插入示例代码」载入一个现成效果，改两行就能用；保存后立即生效。" />
                         </StackPanel>
                         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                             <Button Content="接口文档" Click="WorkshopDocs_Click" />
-                            <ComboBox x:Name="WorkshopTemplateCombo" Width="118" PlaceholderText="从模板开始"
+                            <ComboBox x:Name="WorkshopTemplateCombo" Width="150" PlaceholderText="插入示例代码"
                                       SelectionChanged="WorkshopTemplate_Changed" />
                             <Button Content="新建" Click="WorkshopNew_Click" />
                             <Button Content="保存并启用" Click="WorkshopSave_Click"
@@ -825,12 +830,6 @@
                                           IsOn="False" MinWidth="0" Toggled="WsEnable_Toggled" />
                             <Button x:Name="WorkshopPublishButton" Content="发布到市场" Click="WorkshopPublish_Click"
                                     IsEnabled="False" />
-                        </StackPanel>
-                        <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="12">
-                            <ToggleSwitch x:Name="WsModeSwitch" OffContent="新手模式" OnContent="进阶模式"
-                                          MinWidth="0" Toggled="WsMode_Toggled" />
-                            <TextBlock x:Name="WsModeHint" Style="{StaticResource HintText}" VerticalAlignment="Center"
-                                       Text="新手模式只显示模板和参数；需要改代码时切到进阶。" />
                         </StackPanel>
                     </Grid>
                 </Border>
@@ -920,70 +919,11 @@
                     <Grid Grid.Column="1" RowSpacing="10">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition x:Name="WsCodeRow" Height="*" />
+                            <RowDefinition Height="*" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
-                        <Border x:Name="WsBeginnerCard" Style="{StaticResource CardStyle}" Padding="14,12">
-                            <StackPanel Spacing="8">
-                                <StackPanel Spacing="2">
-                                    <TextBlock Text="选一个模板开始" Style="{StaticResource SectionTitle}" />
-                                    <TextBlock Style="{StaticResource HintText}"
-                                               Text="点卡片载入示例 → 点右上角「保存并启用」→ 在下方拖动滑块微调，改完立即生效。" />
-                                </StackPanel>
-                                <Grid ColumnSpacing="8" RowSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-                                    <Button Tag="1" Click="WsTemplateCard_Click" HorizontalAlignment="Stretch"
-                                            HorizontalContentAlignment="Left" Padding="12,8">
-                                        <StackPanel Spacing="1">
-                                            <TextBlock Text="空气感" FontWeight="SemiBold" />
-                                            <TextBlock Text="提亮高频，人声更通透" Style="{StaticResource HintText}" />
-                                        </StackPanel>
-                                    </Button>
-                                    <Button Grid.Column="1" Tag="3" Click="WsTemplateCard_Click"
-                                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="12,8">
-                                        <StackPanel Spacing="1">
-                                            <TextBlock Text="立体声加宽" FontWeight="SemiBold" />
-                                            <TextBlock Text="拉开左右声场" Style="{StaticResource HintText}" />
-                                        </StackPanel>
-                                    </Button>
-                                    <Button Grid.Row="1" Tag="2" Click="WsTemplateCard_Click"
-                                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="12,8">
-                                        <StackPanel Spacing="1">
-                                            <TextBlock Text="温和饱和" FontWeight="SemiBold" />
-                                            <TextBlock Text="加一点密度和温度" Style="{StaticResource HintText}" />
-                                        </StackPanel>
-                                    </Button>
-                                    <Button Grid.Row="1" Grid.Column="1" Tag="4" Click="WsTemplateCard_Click"
-                                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="12,8">
-                                        <StackPanel Spacing="1">
-                                            <TextBlock Text="低频收紧" FontWeight="SemiBold" />
-                                            <TextBlock Text="切掉喷麦与桌面震动" Style="{StaticResource HintText}" />
-                                        </StackPanel>
-                                    </Button>
-                                    <Button Grid.Row="2" Tag="0" Click="WsTemplateCard_Click"
-                                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="12,8">
-                                        <StackPanel Spacing="1">
-                                            <TextBlock Text="空白模板" FontWeight="SemiBold" />
-                                            <TextBlock Text="从最小骨架自己写" Style="{StaticResource HintText}" />
-                                        </StackPanel>
-                                    </Button>
-                                </Grid>
-                                <TextBlock x:Name="WsBeginnerHint" Style="{StaticResource HintText}"
-                                           Text="不确定选哪个？先试「空气感」，对直播人声最稳。担心效果可以点「测试」先离线跑一遍。" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border x:Name="WsMetaCard" Grid.Row="1" Style="{StaticResource CardStyle}" Padding="14,10">
+                        <Border x:Name="WsMetaCard" Grid.Row="0" Style="{StaticResource CardStyle}" Padding="14,10">
                             <Grid ColumnSpacing="10" RowSpacing="6">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -1024,7 +964,7 @@
                             </Grid>
                         </Border>
 
-                        <Border x:Name="WsCodeCard" Grid.Row="2" Style="{StaticResource CardStyle}" Padding="12">
+                        <Border x:Name="WsCodeCard" Grid.Row="1" Style="{StaticResource CardStyle}" Padding="12">
                             <Grid RowSpacing="6">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -1050,7 +990,7 @@
                             </Grid>
                         </Border>
 
-                        <Border Grid.Row="3" Style="{StaticResource CardStyle}" Padding="12,10">
+                        <Border Grid.Row="2" Style="{StaticResource CardStyle}" Padding="12,10">
                             <Grid RowSpacing="4">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -1774,6 +1714,61 @@
                             </StackPanel>
                         </Border>
 
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+
+            <Grid x:Name="PageSettings" Visibility="Collapsed">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Padding="18,14,18,18" Spacing="12">
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel Spacing="10">
+                                <TextBlock Text="Python 环境" Style="{StaticResource SectionTitle}" />
+                                <TextBlock Style="{StaticResource HintText}" TextWrapping="Wrap"
+                                           Text="GPU 档需要 CUDA 版 PyTorch。默认自动检测本机 Python 3.11；检测不到时，可在这里手动指定 Python 解释器路径。" />
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="SettingsPythonPath" PlaceholderText="例如 C:\Users\你\AppData\Local\Programs\Python\Python311\python.exe" />
+                                    <Button Grid.Column="1" Content="浏览…" Click="SettingsPythonBrowse_Click" />
+                                    <Button Grid.Column="2" Content="自动检测" Click="SettingsPythonDetect_Click" />
+                                </Grid>
+                                <TextBlock x:Name="SettingsPythonStatus" Style="{StaticResource HintText}" TextWrapping="Wrap"
+                                           Text="尚未检测。" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel Spacing="10">
+                                <TextBlock Text="更新" Style="{StaticResource SectionTitle}" />
+                                <ToggleSwitch x:Name="SettingsCheckUpdates" Header="启动时检查更新"
+                                              OnContent="开" OffContent="关" Toggled="SettingsCheckUpdates_Toggled" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel Spacing="10">
+                                <TextBlock Text="手机麦克风" Style="{StaticResource SectionTitle}" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBlock Text="服务端口" Style="{StaticResource MetricLabel}" VerticalAlignment="Center" />
+                                    <NumberBox x:Name="SettingsMicPort" Minimum="1024" Maximum="65535"
+                                               SpinButtonPlacementMode="Compact" ValueChanged="SettingsMicPort_Changed" />
+                                </StackPanel>
+                                <TextBlock Style="{StaticResource HintText}" TextWrapping="Wrap"
+                                           Text="手机麦克风走局域网 HTTP/WebSocket 的端口，默认 8765；被占用时会自动顺延。修改后需重启手机麦克风服务。" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="设置保存位置" Style="{StaticResource SectionTitle}" />
+                                <TextBlock Style="{StaticResource HintText}" TextWrapping="Wrap"
+                                           Text="设置保存在程序目录的 data\mixer\settings.json，随程序一起迁移。" />
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
             </Grid>

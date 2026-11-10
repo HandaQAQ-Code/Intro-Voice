@@ -1082,6 +1082,7 @@ class Service:
         defaults = {"input": "", "output": "", "inputSource": "device",
                     "aiMode": "off", "denoise": False,
                     "gainDb": 0.0, "floorDb": -55.0, "srStrength": 0.7, "latencyMode": "balanced",
+                    "pythonPath": "", "checkUpdates": True,
                     "dsp": dsp_default_params(),
                     "workshop": {"order": [], "enabled": {}, "params": {}},
                     "mobileMic": {"gainDb": 0.0, "hpfHz": 80.0, "gateDb": -62.0,
@@ -1288,17 +1289,18 @@ class Service:
         status["available"] = gpu_ok
         status["note"] = gpu_note
         # 附带本机原生环境检测结果，供界面展示「复用本机 / 下载」选项。
-        native = gpu_install.detect_native_torch(ROOT)
+        preferred = self._preferred_python()
+        native = gpu_install.detect_native_torch(ROOT, preferred)
         status["native"] = native
         status["nativeEnabled"] = gpu_install.read_native_preference(ROOT) is not None
         return status
 
     def cmd_gpu_install(self, request):
-        return gpu_install.start_install(ROOT)
+        return gpu_install.start_install(ROOT, self._preferred_python())
 
     def cmd_gpu_use_native(self, request):
         """优先复用本机原生 Python 3.11 已装好的 CUDA torch，不下载。"""
-        native = gpu_install.detect_native_torch(ROOT)
+        native = gpu_install.detect_native_torch(ROOT, self._preferred_python())
         if native is None:
             return {"ok": False, "error": "未在本机检测到可用的 CUDA 版 PyTorch（需 Python 3.11 + torch + NVIDIA CUDA）。"}
         gpu_install.set_native_preference(ROOT, True, native)
@@ -1312,6 +1314,45 @@ class Service:
         """放弃复用本机环境，改走独立下载（gpu_packages/）。"""
         gpu_install.set_native_preference(ROOT, False)
         return {"ok": True}
+
+    def _preferred_python(self) -> str | None:
+        """用户在设置里手动指定的 Python 路径（若有效）。"""
+        path = str(self.settings.get("pythonPath") or "").strip()
+        return path if path and Path(path).is_file() else None
+
+    def cmd_settings_get(self, request):
+        """读应用级设置（Python 路径、更新检查等），供设置页展示。"""
+        preferred = self._preferred_python()
+        native = gpu_install.detect_native_torch(ROOT, preferred)
+        return {
+            "pythonPath": str(self.settings.get("pythonPath") or ""),
+            "checkUpdates": bool(self.settings.get("checkUpdates", True)),
+            "pythonDetected": native,
+            "mobilePort": int(self.settings.get("mobileMic", {}).get("port", mobile_mic.DEFAULT_PORT)),
+        }
+
+    def cmd_settings_set(self, request):
+        """保存应用级设置。只接受明确列出的键，避免污染 settings。"""
+        changed = False
+        if "pythonPath" in request:
+            path = str(request["pythonPath"] or "").strip()
+            if path and not Path(path).is_file():
+                raise RuntimeError("指定的 Python 路径不存在或不是文件")
+            self.settings["pythonPath"] = path
+            changed = True
+        if "checkUpdates" in request:
+            self.settings["checkUpdates"] = bool(request["checkUpdates"])
+            changed = True
+        if "mobilePort" in request:
+            port = int(request["mobilePort"])
+            if not (1024 <= port <= 65535):
+                raise RuntimeError("端口需在 1024 ~ 65535 之间")
+            self.settings.setdefault("mobileMic", {})["port"] = port
+            self.mic_server._requested = port
+            changed = True
+        if changed:
+            self._save_settings()
+        return self.cmd_settings_get(request)
 
     def cmd_status(self, request):
         return self._status()

@@ -91,13 +91,18 @@ def write_status(root: Path, state: str, message: str, running: bool,
     _status_path(root).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
-def find_python(root: Path) -> str | None:
+def find_python(root: Path, preferred: str | None = None) -> str | None:
     """找一个可用来装 torch 的 Python 3.11 解释器。
 
-    优先 exe 同级的 runtime\python.exe（若发行包自带），再试 py -3.11，
-    最后扫常见安装路径；版本必须是 3.11，否则装出的扩展无法被 frozen 引擎导入。
+    优先用户手动指定的路径（preferred，来自设置），再试 exe 同级的
+    runtime\python.exe（若发行包自带），然后 py -3.11，最后扫常见安装路径；
+    版本必须是 3.11，否则装出的扩展无法被 frozen 引擎导入。
     """
     candidates: list[str] = []
+
+    # 0) 用户手动指定的路径（最高优先）
+    if preferred and Path(preferred).is_file():
+        candidates.append(preferred)
 
     # 1) 发行包自带解释器（如果有）
     for name in ("python.exe", "pythonw.exe"):
@@ -149,9 +154,11 @@ def _python_matches(cand: str) -> tuple[str, str] | None:
     return None
 
 
-def _native_candidates(root: Path) -> list[str]:
+def _native_candidates(root: Path, preferred: str | None = None) -> list[str]:
     """所有可能是 3.11 的候选解释器（与 find_python 同序，但不去重、全部返回）。"""
     candidates: list[str] = []
+    if preferred and Path(preferred).is_file():
+        candidates.append(preferred)
     for name in ("python.exe", "pythonw.exe"):
         bundled = root / "runtime" / name
         if bundled.is_file():
@@ -172,13 +179,14 @@ def _native_candidates(root: Path) -> list[str]:
     return out
 
 
-def detect_native_torch(root: Path) -> dict | None:
+def detect_native_torch(root: Path, preferred: str | None = None) -> dict | None:
     """检测本机原生 Python 3.11 是否已装好可用的 CUDA 版 torch。
 
-    若找到，返回该解释器及其 site-packages 路径（可直接复用，无需下载）；
-    否则返回 None。这是「优先复用本机环境」的关键：原生通过就直接用原电脑的。
+    优先用户手动指定的路径（preferred）。若找到，返回该解释器及其
+    site-packages 路径（可直接复用，无需下载）；否则返回 None。
+    这是「优先复用本机环境」的关键：原生通过就直接用原电脑的。
     """
-    for cand in _native_candidates(root):
+    for cand in _native_candidates(root, preferred):
         if _python_matches(cand) is None:
             continue
         # 让解释器报告 torch 版本、CUDA 是否可用、torch 所在目录。
@@ -244,14 +252,14 @@ def _run_install(root: Path, python: str) -> None:
                      running=False, installed=False)
 
 
-def start_install(root: Path) -> dict:
+def start_install(root: Path, preferred: str | None = None) -> dict:
     """触发后台安装；若已在安装中则直接返回当前状态。"""
     current = read_status(root)
     if current.get("running"):
         return {"ok": False, "status": current,
                 "error": "正在安装中，请稍候"}
 
-    python = find_python(root)
+    python = find_python(root, preferred)
     if python is None:
         return {"ok": False, "status": current,
                 "error": "未找到可用的 Python 3.11。请先安装 Python 3.11（python.org），再点下载。"}

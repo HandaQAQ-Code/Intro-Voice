@@ -80,6 +80,7 @@ public sealed partial class MainWindow : Window
     private string _micSource = "device";
     private string _micView = "virtual";
     private DateTime _micSourcePushedAt = DateTime.MinValue;
+    private bool _suppressSettings;
 
     public MainWindow()
     {
@@ -197,7 +198,6 @@ public sealed partial class MainWindow : Window
         _micSettingTimer.IsRepeating = false;
         _micSettingTimer.Tick += FlushMicSettings;
 
-        ApplyWorkshopMode();
         SetMicView("virtual");
         SetMicSource("device", false);
         Nav.SizeChanged += (_, _) => UpdatePageHeights();
@@ -950,7 +950,7 @@ public sealed partial class MainWindow : Window
         {
             ("live", PageLive), ("fx", PageFx), ("workshop", PageWorkshop),
             ("mic", PageMicConfig), ("plugins", PagePlugins), ("market", PageMarket),
-            ("help", PageHelp),
+            ("help", PageHelp), ("settings", PageSettings),
         };
         foreach (var (pageTag, page) in pages)
         {
@@ -967,6 +967,8 @@ public sealed partial class MainWindow : Window
             _ = LoadMarketAsync(false);
         if (tag == "workshop" && _workshop.Count == 0)
             _ = LoadWorkshopAsync();
+        if (tag == "settings")
+            _ = LoadSettingsAsync();
         if (tag == "mic")
         {
             UpdateMicDeviceName();
@@ -1244,14 +1246,17 @@ def process(x, sr, params):
         ResetWorkshopEditor();
         WsAuthorBox.Text = Environment.UserName;
         ApplyWorkshopTemplate(0);
-        WsModeSwitch.IsOn = true;      // 新建意味着要写代码，直接进进阶模式
         WsNameBox.Focus(FocusState.Programmatic);
     }
 
     private void WorkshopTemplate_Changed(object sender, SelectionChangedEventArgs e)
     {
+        // 示例代码是一次性「插入」动作：插入后把下拉复位，避免再次打开又覆盖用户已改的代码。
         if (WorkshopTemplateCombo.SelectedIndex >= 0)
+        {
             ApplyWorkshopTemplate(WorkshopTemplateCombo.SelectedIndex);
+            WorkshopTemplateCombo.SelectedIndex = -1;
+        }
     }
 
     private void ApplyWorkshopTemplate(int index)
@@ -1265,34 +1270,7 @@ def process(x, sr, params):
             WsSlugBox.Text = slug;
         if (WsDescBox.Text.Trim().Length == 0)
             WsDescBox.Text = desc;
-        WsCodeStatus.Text = "模板 · 未保存";
-    }
-
-    // ------------------------------------------------------------------
-    // 创意工坊：新手模式 + 接口文档
-    // ------------------------------------------------------------------
-    private void WsMode_Toggled(object sender, RoutedEventArgs e) => ApplyWorkshopMode();
-
-    private void ApplyWorkshopMode()
-    {
-        bool advanced = WsModeSwitch.IsOn;
-        WsBeginnerCard.Visibility = advanced ? Visibility.Collapsed : Visibility.Visible;
-        WsMetaCard.Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
-        WsCodeCard.Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
-        WorkshopTemplateCombo.Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
-        WsCodeRow.Height = advanced ? new GridLength(1, GridUnitType.Star) : GridLength.Auto;
-        WsModeHint.Text = advanced
-            ? "进阶模式：完整元数据与代码编辑，适合改算法、调整参数结构。"
-            : "新手模式只显示模板和参数；需要改代码时切到进阶。";
-    }
-
-    private void WsTemplateCard_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button button || button.Tag is not string tag
-            || !int.TryParse(tag, out int index)) return;
-        ApplyWorkshopTemplate(index);
-        WsBeginnerHint.Text = $"已载入「{WorkshopTemplates[index].Name}」：点右上角「保存并启用」，"
-                              + "然后在下方拖动滑块微调；想换回来重新点卡片即可。";
+        WsCodeStatus.Text = $"已插入示例「{name}」 · 未保存";
     }
 
     private async void WorkshopDocs_Click(object sender, RoutedEventArgs e)
@@ -1302,7 +1280,7 @@ def process(x, sr, params):
         panel.Children.Add(DocHeading("三句话说明白"));
         panel.Children.Add(DocText("创意工坊插件就是一个 Python 文件：写一个 process(x, sr, params) 函数，"
                                    + "决定声音怎么变。保存后立刻进入效果链，不用重启；写错了也只会旁通这一块，"
-                                   + "不会把声音弄坏。想改音色又不想写代码，用新手模式的模板就够。"));
+                                   + "不会把声音弄坏。不知道怎么下手，点右上角「插入示例代码」挑一个改改就行。"));
         panel.Children.Add(DocHeading("process 的四个约定"));
         panel.Children.Add(DocText("· x：numpy float32，形状是 (块长度, 2)，左右声道各一列，数值大约在 -1 ~ 1。"));
         panel.Children.Add(DocText("· sr：采样率，固定 48000，可以忽略。"));
@@ -2303,6 +2281,133 @@ def process(x, sr, params):
         try
         {
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(page) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 设置
+    // ------------------------------------------------------------------
+    private async Task LoadSettingsAsync()
+    {
+        if (!_connected) return;
+        try
+        {
+            var result = await _client.CallAsync("settings_get", null, 30000);
+            _suppressSettings = true;
+            SettingsPythonPath.Text = Str(result, "pythonPath");
+            SettingsCheckUpdates.IsOn = Bool(result, "checkUpdates");
+            int port = (int)Num(result, "mobilePort", 8765);
+            if (port >= 1024 && port <= 65535) SettingsMicPort.Value = port;
+            _suppressSettings = false;
+            UpdatePythonStatus(result);
+        }
+        catch (Exception ex)
+        {
+            _suppressSettings = false;
+            SettingsPythonStatus.Text = "加载设置失败：" + ex.Message;
+        }
+    }
+
+    private void UpdatePythonStatus(JsonElement result)
+    {
+        string path = Str(result, "pythonPath");
+        if (result.TryGetProperty("pythonDetected", out var detected)
+            && detected.ValueKind == JsonValueKind.Object)
+        {
+            string ver = Str(detected, "torchVersion");
+            bool cuda = Bool(detected, "cuda");
+            if (path.Length > 0)
+            {
+                SettingsPythonStatus.Text = cuda
+                    ? $"✓ 已指定 Python（{path}），检测到 torch {ver} 且 CUDA 可用。"
+                    : $"已指定 Python（{path}），但未检测到可用的 CUDA torch。";
+            }
+            else
+            {
+                SettingsPythonStatus.Text = cuda
+                    ? $"✓ 自动检测到本机 Python，torch {ver} 且 CUDA 可用。"
+                    : "自动检测：本机未找到带 CUDA 的 torch，可手动指定 Python 路径。";
+            }
+        }
+        else
+        {
+            SettingsPythonStatus.Text = path.Length > 0
+                ? $"已指定 Python（{path}），但该环境暂不可用。"
+                : "自动检测：本机未找到可用的 Python 环境，可手动指定。";
+        }
+    }
+
+    private async void SettingsPythonDetect_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_connected) return;
+        SettingsPythonStatus.Text = "正在自动检测本机 Python 环境…";
+        try
+        {
+            var result = await _client.CallAsync("settings_set",
+                new JsonObject { ["pythonPath"] = "" }, 30000);
+            _suppressSettings = true;
+            SettingsPythonPath.Text = Str(result, "pythonPath");
+            _suppressSettings = false;
+            UpdatePythonStatus(result);
+        }
+        catch (Exception ex)
+        {
+            SettingsPythonStatus.Text = "自动检测失败：" + ex.Message;
+        }
+    }
+
+    private async void SettingsPythonBrowse_Click(object sender, RoutedEventArgs e)
+    {
+        var picker = new Windows.Storage.Pickers.FileOpenPicker();
+        picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.ComputerFolder;
+        picker.FileTypeFilter.Add(".exe");
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
+        var file = await picker.PickSingleFileAsync();
+        if (file is null) return;
+
+        var path = file.Path;
+        SettingsPythonPath.Text = path;
+        if (!_connected) return;
+        try
+        {
+            var result = await _client.CallAsync("settings_set",
+                new JsonObject { ["pythonPath"] = path }, 30000);
+            UpdatePythonStatus(result);
+        }
+        catch (Exception ex)
+        {
+            SettingsPythonStatus.Text = "设置 Python 路径失败：" + ex.Message;
+        }
+    }
+
+    private async void SettingsCheckUpdates_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_suppressSettings || !_connected) return;
+        try
+        {
+            await _client.CallAsync("settings_set",
+                new JsonObject { ["checkUpdates"] = SettingsCheckUpdates.IsOn }, 8000);
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+        }
+    }
+
+    private async void SettingsMicPort_Changed(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (_suppressSettings || !_connected) return;
+        if (double.IsNaN(args.NewValue)) return;
+        int port = (int)Math.Clamp(args.NewValue, 1024, 65535);
+        try
+        {
+            await _client.CallAsync("settings_set",
+                new JsonObject { ["mobilePort"] = port }, 8000);
         }
         catch (Exception ex)
         {
