@@ -15,8 +15,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
-import re
 import socket
 import struct
 import sys
@@ -40,18 +38,18 @@ def lan_ip() -> str:
     """返回最可能被手机访问到的局域网 IPv4。
 
     优先策略（按序）：
-    1. 有默认网关的网卡上、非 169.254 开头的地址；
-    2. UDP 连外网时系统路由选出的地址（回退）；
-    3. 首个非回环、非 APIPA 的私网地址；
-    4. 实在没有则 127.0.0.1。
+    1. UDP 连外网时系统路由选出的源地址（最可靠，不依赖外部命令）；
+    2. 首个非回环、非 APIPA 的私网地址；
+    3. 实在没有则 127.0.0.1。
 
     排除回环、APIPA（169.254）、以及常见虚拟网卡（VMware/VirtualBox/Hyper-V/
     VPN/Tailscale 等），避免二维码里出现手机根本连不上的 IP。
+    全程只用 socket，不调用 ipconfig 等外部命令——PyInstaller 无窗口模式下
+    调外部控制台程序会报 0x800700e8。
     """
     def _usable(addr: str) -> bool:
         if not addr or addr.startswith("127.") or addr.startswith("169.254."):
             return False
-        # 忽略 0.x / 224+ 等非单播网段
         parts = addr.split(".")
         if len(parts) != 4:
             return False
@@ -69,6 +67,23 @@ def lan_ip() -> str:
         "tunnel", "vpn", "tailscale", "zerotier", "wireguard", "loopback",
         "bluetooth", "wsl", "docker",
     )
+
+    # 1) 系统路由选出的源地址：UDP 连外网（不真正发包，只是让内核选路由）
+    routed = ""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        candidate = sock.getsockname()[0]
+        if _usable(candidate):
+            routed = candidate
+    except OSError:
+        pass
+    finally:
+        sock.close()
+    if routed:
+        return routed
+
+    # 2) 枚举本机地址，排除虚拟网卡后取第一个私网地址
     try:
         hostname = socket.gethostname()
         infos = socket.getaddrinfo(hostname, None, socket.AF_INET,
@@ -76,81 +91,21 @@ def lan_ip() -> str:
     except OSError:
         infos = []
 
-    gateways = _default_gateways()
-    candidates = []  # (priority, addr)
-    seen = set()
     for info in infos:
         addr = info[4][0]
-        if addr in seen or not _usable(addr):
+        if not _usable(addr):
             continue
-        seen.add(addr)
-        if addr in gateways:
-            candidates.append((0, addr))  # 有默认网关的网卡最优先
-        else:
-            candidates.append((1, addr))
-
-    if not candidates:
-        # 回退：UDP 连外网，取系统路由选出的源地址
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            sock.connect(("8.8.8.8", 80))
-            addr = sock.getsockname()[0]
-            if _usable(addr):
-                return addr
-        except OSError:
-            pass
-        finally:
-            sock.close()
-
-    if not candidates:
-        return "127.0.0.1"
-
-    candidates.sort(key=lambda item: item[0])
-    for _, addr in candidates:
-        low = addr.lower()
-        if any(marker in low for marker in VIRTUAL_MARKERS):
+        if any(marker in addr.lower() for marker in VIRTUAL_MARKERS):
             continue
         return addr
-    # 全是虚拟网卡时才退回第一个
-    return candidates[0][1]
 
+    # 3) 兜底：第一个可用的私网地址（哪怕名字带虚拟网卡标记）
+    for info in infos:
+        addr = info[4][0]
+        if _usable(addr):
+            return addr
 
-def _default_gateways() -> set[str]:
-    """读取系统默认网关对应的本地接口地址（Windows 用 ipconfig 解析）。"""
-    result: set[str] = set()
-    if os.name != "nt":
-        return result
-    try:
-        import subprocess
-        out = subprocess.run(
-            ["ipconfig"], capture_output=True, text=True,
-            timeout=5, errors="ignore").stdout
-    except Exception:
-        return result
-    # 解析「默认网关 . . . : 192.168.1.1」与邻近的 IPv4 地址段
-    lines = out.splitlines()
-    for i, line in enumerate(lines):
-        if "默认网关" in line or "Default Gateway" in line:
-            value = line.split(":", 1)[-1].strip()
-            if value and value not in ("::", ""):
-                # 网关地址本身；本机接口通常同网段，向上找本段 IPv4
-                for j in range(i, max(-1, i - 12), -1):
-                    m = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", lines[j])
-                    if m and _usable_ip(m.group(1)):
-                        result.add(m.group(1))
-                        break
-    return result
-
-
-def _usable_ip(addr: str) -> bool:
-    if not addr or addr.startswith("127.") or addr.startswith("169.254."):
-        return False
-    try:
-        octets = [int(p) for p in addr.split(".")]
-    except (ValueError, AttributeError):
-        return False
-    return len(octets) == 4 and all(0 <= o <= 255 for o in octets) \
-        and octets[0] not in (0, 127, 169)
+    return "127.0.0.1"
 
 
 def new_pin(length: int = 6) -> str:

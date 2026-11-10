@@ -34,6 +34,17 @@ PACKAGES = [
 INDEX_URL = "https://download.pytorch.org/whl/cu121"
 
 
+def _run_kwargs(**extra) -> dict:
+    """统一的 subprocess.run 参数：在无窗口（frozen console=False）环境下
+    必须带 CREATE_NO_WINDOW，否则启动外部命令会报 0x800700e8。
+    """
+    kwargs: dict = {"capture_output": True, "text": True, "timeout": 30, "errors": "ignore"}
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    kwargs.update(extra)
+    return kwargs
+
+
 def gpu_packages_dir(root: Path) -> Path:
     return root / "gpu_packages"
 
@@ -110,7 +121,7 @@ def find_python(root: Path) -> str | None:
         try:
             out = subprocess.run([cand, "-c",
                                   "import sys;print(sys.version_info[0],sys.version_info[1])"],
-                                 capture_output=True, text=True, timeout=15, errors="ignore")
+                                 **_run_kwargs(timeout=15))
         except (OSError, subprocess.SubprocessError):
             continue
         text = out.stdout.strip()
@@ -127,7 +138,7 @@ def _python_matches(cand: str) -> tuple[str, str] | None:
     try:
         out = subprocess.run([cand, "-c",
                               "import sys;print(sys.version_info[0],sys.version_info[1])"],
-                             capture_output=True, text=True, timeout=15, errors="ignore")
+                             **_run_kwargs(timeout=15))
     except (OSError, subprocess.SubprocessError):
         return None
     parts = out.stdout.strip().split()
@@ -180,7 +191,7 @@ def detect_native_torch(root: Path) -> dict | None:
         )
         try:
             out = subprocess.run([cand, "-c", probe],
-                                 capture_output=True, text=True, timeout=30, errors="ignore")
+                                 **_run_kwargs(timeout=30))
         except (OSError, subprocess.SubprocessError):
             continue
         lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
@@ -209,9 +220,13 @@ def _run_install(root: Path, python: str) -> None:
     with open(log_path, "w", encoding="utf-8", errors="replace") as log:
         log.write(" ".join(cmd) + "\n")
         log.flush()
+        # 无窗口环境必须 CREATE_NO_WINDOW + 重定向输出，否则 pip 报 0x800700e8。
+        pip_kwargs = {"stdout": log, "stderr": subprocess.STDOUT,
+                      "cwd": str(root), "timeout": 60 * 60}
+        if os.name == "nt":
+            pip_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
-            proc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT,
-                                  cwd=str(root), timeout=60 * 60)
+            proc = subprocess.run(cmd, **pip_kwargs)
         except subprocess.TimeoutExpired:
             write_status(root, "error", "安装超时（超过 1 小时）。请检查网络后重试。",
                          running=False, installed=False)

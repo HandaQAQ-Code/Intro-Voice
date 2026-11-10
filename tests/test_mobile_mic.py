@@ -226,11 +226,9 @@ def test_lan_ip() -> None:
     # 私网/合法 IPv4 形态
     import re
     check("lan_ip 是合法 IPv4", bool(re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip)), ip)
-    # _usable 过滤
-    check("过滤回环", mm._usable_ip("127.0.0.1") is False)
-    check("过滤 APIPA", mm._usable_ip("169.254.10.5") is False)
-    check("保留私网", mm._usable_ip("192.168.1.8") is True)
-    check("保留 172 段", mm._usable_ip("172.31.149.184") is True)
+    # lan_ip 必须是纯 socket 实现：不再调用 ipconfig 等外部命令（避免 0x800700e8）
+    check("无 ipconfig 依赖", not hasattr(mm, "_default_gateways"))
+    check("无 _usable_ip 残留", not hasattr(mm, "_usable_ip"))
 
 
 def main() -> int:

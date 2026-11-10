@@ -1016,7 +1016,8 @@ def scan_plugins(dirs: list[str]) -> dict:
         with open(output_path, "wb") as handle:
             proc = subprocess.run(_scan_worker_command(dirs),
                                   stdout=handle, stderr=subprocess.STDOUT, timeout=max_timeout,
-                                  cwd=str(ROOT))
+                                  cwd=str(ROOT),
+                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except subprocess.TimeoutExpired:
         return {"plugins": [], "errors": [{"error": f"插件扫描超过 {max_timeout} 秒，已终止"}]}
     raw_text = output_path.read_text(encoding="utf-8", errors="replace")
