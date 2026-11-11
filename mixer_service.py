@@ -1108,6 +1108,7 @@ class Service:
                     "aiMode": "off", "denoise": False,
                     "gainDb": 0.0, "floorDb": -55.0, "srStrength": 0.7, "latencyMode": "balanced",
                     "pythonPath": "", "checkUpdates": True, "tutorialSeen": False,
+                    "theme": "system",
                     "dsp": dsp_default_params(),
                     "workshop": {"order": [], "enabled": {}, "params": {}},
                     "mobileMic": {"gainDb": 0.0, "hpfHz": 80.0, "gateDb": -62.0,
@@ -1608,6 +1609,7 @@ class Service:
             "pythonPath": str(self.settings.get("pythonPath") or ""),
             "checkUpdates": bool(self.settings.get("checkUpdates", True)),
             "tutorialSeen": bool(self.settings.get("tutorialSeen", False)),
+            "theme": str(self.settings.get("theme", "system")),
             "pythonDetected": pref,
             "pythons": [],
             "pythonCount": 0,
@@ -1640,6 +1642,12 @@ class Service:
             changed = True
         if "tutorialSeen" in request:
             self.settings["tutorialSeen"] = bool(request["tutorialSeen"])
+            changed = True
+        if "theme" in request:
+            theme = str(request["theme"] or "system")
+            if theme not in ("system", "light", "dark"):
+                raise RuntimeError("主题值无效")
+            self.settings["theme"] = theme
             changed = True
         if "inputDevice" in request:
             dev_id = int(request["inputDevice"])

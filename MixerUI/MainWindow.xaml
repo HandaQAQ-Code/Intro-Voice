@@ -27,8 +27,9 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
+                <!-- 拖拽层铺满整条标题栏：按钮在上层照常可点，其余空白处都能拖动、双击最大化 -->
                 <Grid x:Name="AppDragRegion" Background="Transparent" VerticalAlignment="Stretch"
-                      MinWidth="220">
+                      Grid.ColumnSpan="4" MinWidth="220">
                     <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center"
                                 IsHitTestVisible="False">
                         <Image Source="ms-appx:///Assets/app-icon.png" Width="30" Height="30" />
@@ -125,16 +126,13 @@
 
             <NavigationView.PaneFooter>
                 <StackPanel Spacing="6" Margin="4,0,4,8">
-                    <Button Content="新手教程" Click="Tutorial_Click"
-                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Left">
-                        <Button.ContentTemplate>
-                            <DataTemplate>
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <FontIcon Glyph="&#xE897;" FontSize="14" />
-                                    <TextBlock Text="新手教程" />
-                                </StackPanel>
-                            </DataTemplate>
-                        </Button.ContentTemplate>
+                    <Button Click="Tutorial_Click"
+                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                            Padding="12,9" MinHeight="40">
+                        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE897;" FontSize="14" VerticalAlignment="Center" />
+                            <TextBlock Text="新手教程" VerticalAlignment="Center" />
+                        </StackPanel>
                     </Button>
                     <TextBlock Text="Intro Voice 1.0.0" FontSize="11" Margin="2,0,0,0"
                                Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
@@ -1656,47 +1654,6 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Padding="18,14,18,18" Spacing="12">
                         <Border Style="{StaticResource CardStyle}">
-                            <StackPanel Spacing="8">
-                                <TextBlock Text="三档效果对比" Style="{StaticResource SectionTitle}" />
-                                <TextBlock x:Name="TierCompare" Style="{StaticResource HintText}" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Style="{StaticResource CardStyle}">
-                            <StackPanel Spacing="8">
-                                <TextBlock Text="OBS 采集设置" Style="{StaticResource SectionTitle}" />
-                                <TextBlock Style="{StaticResource HintText}"
-                                           Text="本程序不修改系统默认播放/录制设备，也不改动 OBS 配置。所有处理结果写入 VB-CABLE 的 CABLE Input。" />
-                                <TextBlock Style="{StaticResource HintText}"
-                                           Text="OBS 侧在「音频输出采集」或「应用程序音频采集」中选择 CABLE Output（VB-Audio Virtual Cable）；也可以添加「音频输入采集」并选择 CABLE Output。" />
-                                <TextBlock Style="{StaticResource HintText}"
-                                           Text="如果 OBS 里没有声音，先确认顶栏状态为「运行中」，再看「主控」页的输出电平是否有跳动。" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Style="{StaticResource CardStyle}">
-                            <StackPanel Spacing="8">
-                                <TextBlock Text="声纹与模型" Style="{StaticResource SectionTitle}" />
-                                <TextBlock Style="{StaticResource HintText}"
-                                           Text="AI 档需要 data/target.wav 中的声纹。想换声纹时，运行 tools\录制声纹.bat 重新采集（16 kHz、单声道、至少 3 秒有效人声）。" />
-                                <TextBlock Style="{StaticResource HintText}"
-                                           Text="GPU 档需要额外安装 CUDA 版 PyTorch：运行 tools\install_gpu_support.bat，装完重启程序即可在「主控」页选择 GPU 档。" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Style="{StaticResource CardStyle}">
-                            <StackPanel Spacing="8">
-                                <TextBlock Text="故障排查" Style="{StaticResource SectionTitle}" />
-                                <TextBlock Style="{StaticResource HintText}"
-                                           Text="服务未连接：查看 data\mixer\service.log；界面日志在 data\mixer\ui.log。" />
-                                <TextBlock Style="{StaticResource HintText}"
-                                           Text="没有声音：确认输出设备为 CABLE Input、系统未静音本程序、OBS 采集的是 CABLE Output。" />
-                                <TextBlock Style="{StaticResource HintText}"
-                                           Text="声音断续：RTF 接近 1 时说明 CPU 跟不上，可关闭超分或改用 GPU 档。" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Style="{StaticResource CardStyle}">
                             <StackPanel Spacing="6">
                                 <TextBlock Text="关于" Style="{StaticResource SectionTitle}" />
                                 <TextBlock Text="Intro Voice 音拓 1.0.0" Style="{StaticResource HintText}" />
@@ -1734,6 +1691,20 @@
             <Grid x:Name="PageSettings" Visibility="Collapsed">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Padding="18,14,18,18" Spacing="12">
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel Spacing="10">
+                                <TextBlock Text="外观" Style="{StaticResource SectionTitle}" />
+                                <TextBlock Style="{StaticResource HintText}" TextWrapping="Wrap"
+                                           Text="切换浅色 / 深色界面。「跟随系统」会随 Windows 的浅色、深色模式自动切换。" />
+                                <ComboBox x:Name="SettingsTheme" MinWidth="200"
+                                          SelectionChanged="SettingsTheme_Changed">
+                                    <ComboBoxItem Content="跟随系统" Tag="system" />
+                                    <ComboBoxItem Content="浅色" Tag="light" />
+                                    <ComboBoxItem Content="深色" Tag="dark" />
+                                </ComboBox>
+                            </StackPanel>
+                        </Border>
+
                         <Border Style="{StaticResource CardStyle}">
                             <StackPanel Spacing="10">
                                 <TextBlock Text="Python 环境" Style="{StaticResource SectionTitle}" />
@@ -1829,13 +1800,6 @@
                             </StackPanel>
                         </Border>
 
-                        <Border Style="{StaticResource CardStyle}">
-                            <StackPanel Spacing="6">
-                                <TextBlock Text="设置保存位置" Style="{StaticResource SectionTitle}" />
-                                <TextBlock Style="{StaticResource HintText}" TextWrapping="Wrap"
-                                           Text="设置保存在程序目录的 data\mixer\settings.json，随程序一起迁移。" />
-                            </StackPanel>
-                        </Border>
                     </StackPanel>
                 </ScrollViewer>
             </Grid>

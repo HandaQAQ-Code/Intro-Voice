@@ -82,6 +82,7 @@ public sealed partial class MainWindow : Window
     private string _micView = "virtual";
     private DateTime _micSourcePushedAt = DateTime.MinValue;
     private bool _suppressSettings;
+    private string _theme = "system";
 
     public MainWindow()
     {
@@ -218,12 +219,20 @@ public sealed partial class MainWindow : Window
         {
             ExtendsContentIntoTitleBar = true;
             SetTitleBar(AppDragRegion);
-            var bar = AppWindow.TitleBar;
-            var transparent = Windows.UI.Color.FromArgb(0, 0, 0, 0);
-            bar.ButtonBackgroundColor = transparent;
-            bar.ButtonInactiveBackgroundColor = transparent;
-            bar.ButtonHoverBackgroundColor = Windows.UI.Color.FromArgb(24, 0, 0, 0);
-            bar.ButtonPressedBackgroundColor = Windows.UI.Color.FromArgb(36, 0, 0, 0);
+            ApplyTitleBarColors();
+            // 跟随系统时，Windows 切换浅色/深色后同步系统按钮的前景色。
+            RootLayout.ActualThemeChanged += (_, _) => ApplyTitleBarColors();
+            // 双击标题栏最大化/还原：系统通常会处理，这里兜底，避免某些输入设备失效。
+            AppDragRegion.DoubleTapped += (_, _) =>
+            {
+                if (AppWindow.Presenter is OverlappedPresenter presenter)
+                {
+                    if (presenter.State == OverlappedPresenterState.Maximized)
+                        presenter.Restore();
+                    else
+                        presenter.Maximize();
+                }
+            };
 
             var hwnd = WindowNative.GetWindowHandle(this);
             int none = unchecked((int)0xFFFFFFFE);  // DWMWA_COLOR_NONE
@@ -233,6 +242,73 @@ public sealed partial class MainWindow : Window
         {
             // 老系统不支持时退回系统标题栏，不影响功能
         }
+    }
+
+    /// <summary>系统窗口按钮的前景色要跟着主题走，否则浅色模式下白按钮看不见。</summary>
+    private void ApplyTitleBarColors()
+    {
+        try
+        {
+            var bar = AppWindow.TitleBar;
+            bool dark = _theme == "dark"
+                        || (_theme == "system" && RootLayout.ActualTheme == ElementTheme.Dark);
+            var transparent = Windows.UI.Color.FromArgb(0, 0, 0, 0);
+            bar.ButtonBackgroundColor = transparent;
+            bar.ButtonInactiveBackgroundColor = transparent;
+            bar.ButtonForegroundColor = dark
+                ? Windows.UI.Color.FromArgb(255, 255, 255, 255)
+                : Windows.UI.Color.FromArgb(255, 32, 32, 32);
+            bar.ButtonInactiveForegroundColor = dark
+                ? Windows.UI.Color.FromArgb(255, 160, 160, 160)
+                : Windows.UI.Color.FromArgb(255, 120, 120, 120);
+            bar.ButtonHoverForegroundColor = bar.ButtonForegroundColor;
+            bar.ButtonPressedForegroundColor = bar.ButtonForegroundColor;
+            bar.ButtonHoverBackgroundColor = dark
+                ? Windows.UI.Color.FromArgb(24, 255, 255, 255)
+                : Windows.UI.Color.FromArgb(20, 0, 0, 0);
+            bar.ButtonPressedBackgroundColor = dark
+                ? Windows.UI.Color.FromArgb(36, 255, 255, 255)
+                : Windows.UI.Color.FromArgb(30, 0, 0, 0);
+        }
+        catch
+        {
+            // 老系统取不到 TitleBar 时忽略，不影响界面。
+        }
+    }
+
+    /// <summary>切换界面主题：system / light / dark。persist=true 时写回设置。</summary>
+    private void ApplyTheme(string theme, bool persist = false)
+    {
+        _theme = theme is "light" or "dark" ? theme : "system";
+        RootLayout.RequestedTheme = _theme switch
+        {
+            "light" => ElementTheme.Light,
+            "dark" => ElementTheme.Dark,
+            _ => ElementTheme.Default,
+        };
+        ApplyTitleBarColors();
+        if (persist) _ = SaveThemeAsync(_theme);
+    }
+
+    private async Task SaveThemeAsync(string theme)
+    {
+        if (!_connected) return;
+        try
+        {
+            await _client.CallAsync("settings_set",
+                new JsonObject { ["theme"] = theme }, 8000);
+        }
+        catch
+        {
+            // 保存失败只影响下次启动，不打断当前切换。
+        }
+    }
+
+    private void SettingsTheme_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressSettings) return;
+        if (SettingsTheme.SelectedItem is not ComboBoxItem item) return;
+        ApplyTheme(item.Tag as string ?? "system", persist: true);
     }
 
     // ------------------------------------------------------------------
@@ -374,6 +450,8 @@ public sealed partial class MainWindow : Window
             UpdateOptionLabels();
             UpdateAiControls();
             UpdateTierTexts();
+            // 主题存在 settings 里，接上服务后立刻按用户上次的选择应用。
+            ApplyTheme(Str(settings, "theme"));
         }
         finally
         {
@@ -457,14 +535,6 @@ public sealed partial class MainWindow : Window
             _ => "关闭档：48 kHz 全带宽直通，不做声纹、不做降噪，音质与原声完全一致；" +
                  "CPU 占用最低，延迟最小。代价是环境噪声与房间混响都会原样输出。",
         };
-
-        TierCompare.Text = _gpuAvailable
-            ? "关闭：原声直通 · 音质 100% 保真 · CPU ≈0% · 无降噪，适合安静环境与低配机器\n" +
-              "CPU：降噪 + FlashSR 超分 · 音质“清晰耐听”，细节略有平滑 · CPU 中高、GPU 不用 · 适合没有 N 卡的用户\n" +
-              $"GPU：降噪 + LavaSR v2 超分 · 音质最好、高频最自然 · 显存约 1~2 GB · 适合直播/录制追求音质（{_gpuNote}）"
-            : "关闭：原声直通 · 音质 100% 保真 · CPU ≈0% · 无降噪，适合安静环境与低配机器\n" +
-              "CPU：降噪 + FlashSR 超分 · 音质“清晰耐听”，细节略有平滑 · CPU 中高 · 当前环境可用，推荐\n" +
-              $"GPU：降噪 + LavaSR v2 超分 · 音质最好但需要 NVIDIA 显卡 + CUDA PyTorch（{_gpuNote}）";
 
         string latency = (LatencyCombo.SelectedItem as LatencyItem)?.Value ?? "balanced";
         LatencyHint.Text = latency switch
@@ -3750,6 +3820,8 @@ def process(x, sr, params):
             _suppressSettings = true;
             SettingsPythonPath.Text = Str(result, "pythonPath");
             SettingsCheckUpdates.IsOn = Bool(result, "checkUpdates");
+            string theme = Str(result, "theme");
+            SettingsTheme.SelectedIndex = theme == "light" ? 1 : theme == "dark" ? 2 : 0;
             int port = (int)Num(result, "mobilePort", 8765);
             if (port >= 1024 && port <= 65535) SettingsMicPort.Value = port;
             _suppressSettings = false;
