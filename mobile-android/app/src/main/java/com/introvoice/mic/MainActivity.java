@@ -27,6 +27,9 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.google.zxing.integration.android.IntentIntegrator;
+import com.google.zxing.integration.android.IntentResult;
+
 import java.util.Locale;
 import java.util.function.IntConsumer;
 
@@ -131,7 +134,7 @@ public final class MainActivity extends Activity {
         root.addView(hero());
 
         // ---- 连接 ----
-        LinearLayout conn = card(root, "连接电脑", "与电脑端「手机麦克风」页显示的地址保持一致");
+        LinearLayout conn = card(root, "连接电脑", "扫电脑上的二维码最快；也可以手动填写地址和 PIN");
         LinearLayout addrRow = new LinearLayout(this);
         addrRow.setOrientation(LinearLayout.HORIZONTAL);
         addrRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -155,9 +158,14 @@ public final class MainActivity extends Activity {
 
         add(conn, pinInput, 0, 10, 0, 0);
 
+        TextView scanBtn = (TextView) button("扫一扫连接", Ui.CARD_SOFT, Ui.TEXT);
+        scanBtn.setBackground(Ui.round(Ui.CARD_SOFT, Ui.dp(this, 14), Ui.STROKE, Ui.dp(this, 1)));
+        scanBtn.setOnClickListener(v -> startScan());
+        add(conn, scanBtn, 0, 14, 0, 0);
+
         connectBtn = (TextView) button("连接电脑", Ui.ACCENT, 0xFF241C12);
         connectBtn.setOnClickListener(v -> toggleConnection());
-        add(conn, connectBtn, 0, 14, 0, 0);
+        add(conn, connectBtn, 0, 10, 0, 0);
 
         LinearLayout statusRow = new LinearLayout(this);
         statusRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -747,6 +755,70 @@ public final class MainActivity extends Activity {
             e.putInt("pcJitter", 20 + pcJitterBar.getProgress());
         }
         e.apply();
+    }
+
+    // ------------------------------------------------------------ 扫码
+
+    private void startScan() {
+        new IntentIntegrator(this)
+                .setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+                .setPrompt("对准电脑端「手机麦克风」页的二维码")
+                .setBeepEnabled(false)
+                .setOrientationLocked(true)
+                .initiateScan();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        IntentResult result = IntentIntegrator.parseActivityResult(requestCode, resultCode, data);
+        if (result != null) {
+            if (result.getContents() != null) {
+                applyScanned(result.getContents());
+            }
+            return;
+        }
+        super.onActivityResult(requestCode, resultCode, data);
+    }
+
+    /** 支持 introvoice://mic?host=&port=&pin= 深链；扫到安装页地址时只填地址并提示补 PIN。 */
+    private void applyScanned(String raw) {
+        String text = raw == null ? "" : raw.trim();
+        if (text.isEmpty()) {
+            return;
+        }
+        Uri uri = Uri.parse(text);
+        String host = null;
+        String port = null;
+        String pin = null;
+        if ("introvoice".equals(uri.getScheme())) {
+            host = uri.getQueryParameter("host");
+            port = uri.getQueryParameter("port");
+            pin = uri.getQueryParameter("pin");
+        } else if ("http".equals(uri.getScheme()) || "https".equals(uri.getScheme())) {
+            host = uri.getHost();
+            if (uri.getPort() > 0) {
+                port = String.valueOf(uri.getPort());
+            }
+        }
+        if (host == null || host.isEmpty()) {
+            toast("这不是电脑端的配对二维码");
+            return;
+        }
+        hostInput.setText(host);
+        if (port != null && !port.isEmpty()) {
+            portInput.setText(port);
+        }
+        if (pin != null && !pin.isEmpty()) {
+            pinInput.setText(pin.toUpperCase(Locale.US));
+        }
+        savePrefs();
+        if (pin == null || pin.length() < 4) {
+            pinInput.requestFocus();
+            toast("已填入地址，请补填电脑上显示的 6 位 PIN");
+            return;
+        }
+        toast("已读取配对信息，正在连接…");
+        requestPermissionsAndConnect();
     }
 
     private void handleDeepLink(Intent intent) {

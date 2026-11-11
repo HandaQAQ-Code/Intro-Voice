@@ -52,4 +52,6 @@ android {
 
 dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // 内置扫码：库自带 CaptureActivity，扫完回调到 onActivityResult。
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }

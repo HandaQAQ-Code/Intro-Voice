@@ -71,6 +71,7 @@ public sealed partial class MainWindow : Window
     private bool _marketLoading;
     private JsonElement _updateInfo;
     private bool _updateAvailable;
+    private bool _updateChecking;
     private string _updateFile = "";
     private bool _installInProgress;
     private bool _micRunning;
@@ -1366,6 +1367,10 @@ def process(x, sr, params):
     private TextBlock? _guideVoiceStatus;
     private ProgressBar? _guideVoiceProgress;
     private bool _guideVoiceRecording;
+    // 录制可视化：倒计时 + 32 根滚动电平柱
+    private TextBlock? _guideVoiceCountdown;
+    private Microsoft.UI.Xaml.Shapes.Rectangle[]? _guideVoiceBars;
+    private readonly double[] _guideVoiceLevels = new double[32];
 
     // 引导内手机二维码：按 PIN + 端口缓存，避免每次刷新都重新生成
     private string _guideQrKey = "";
@@ -1480,7 +1485,6 @@ def process(x, sr, params):
         var prev = new Button { Content = "上一步", MinWidth = 84 };
         var next = new Button { Content = "下一步", MinWidth = 96 };
         next.Style = (Style)Application.Current.Resources["AccentButtonStyle"];
-        var close = new Button { Content = "关闭" };
 
         prev.Click += async (_, _) =>
         {
@@ -1498,24 +1502,40 @@ def process(x, sr, params):
                 await FinishTutorialAsync();
             }
         };
-        close.Click += async (_, _) => await FinishTutorialAsync();
+        var footer = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        footer.Children.Add(prev);
+        footer.Children.Add(next);
 
-        var footer = new Grid();
-        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        close.HorizontalAlignment = HorizontalAlignment.Left;
-        footer.Children.Add(close);
-        var rightButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        rightButtons.Children.Add(prev);
-        rightButtons.Children.Add(next);
-        Grid.SetColumn(rightButtons, 2);
-        footer.Children.Add(rightButtons);
+        // 标题行：左侧步骤标签 + 标题，右上角一个 X 关闭，底部不再放「关闭」。
+        var headText = new StackPanel { Spacing = 4 };
+        headText.Children.Add(stepLabel);
+        headText.Children.Add(title);
+        var head = new Grid();
+        head.Children.Add(headText);
+        var closeX = new Button
+        {
+            Content = new FontIcon { Glyph = "\uE711", FontSize = 12 },
+            Width = 32,
+            Height = 32,
+            Padding = new Thickness(0),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(16),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+        };
+        ToolTipService.SetToolTip(closeX, "关闭");
+        closeX.Click += async (_, _) => await FinishTutorialAsync();
+        head.Children.Add(closeX);
 
         // 宽度不能超过 ContentDialog 内容区，否则右侧按钮会被裁掉。
         var root = new StackPanel { Spacing = 12, Width = 512 };
-        root.Children.Add(stepLabel);
-        root.Children.Add(title);
+        root.Children.Add(head);
         root.Children.Add(new ScrollViewer
         {
             Content = body,
@@ -1557,6 +1577,8 @@ def process(x, sr, params):
             _guideNext = null;
             _guideVoiceStatus = null;
             _guideVoiceProgress = null;
+            _guideVoiceCountdown = null;
+            _guideVoiceBars = null;
         }
     }
 
@@ -1577,6 +1599,8 @@ def process(x, sr, params):
             _guideNext.Content = _guideStep == _guideSteps.Count - 1 ? "完成" : "下一步";
             _guideVoiceStatus = null;
             _guideVoiceProgress = null;
+            _guideVoiceCountdown = null;
+            _guideVoiceBars = null;
 
             // 每步都刷新真实状态：看到的就是当前配置。
             try
@@ -1665,15 +1689,41 @@ def process(x, sr, params):
     {
         AddGuideText("先决定声音从哪进来。这里给两个选项，选哪个都会立刻写进配置。");
 
-        var choices = new StackPanel { Spacing = 6 };
-        choices.Children.Add(GuideRadio(
-            "① 用电脑上的麦克风 —— 本机 / USB / 声卡，从下面下拉框挑",
-            !_guidePhoneBranch,
-            () => SetGuideBranchAsync(false)));
-        choices.Children.Add(GuideRadio(
-            "② 用手机当麦克风 —— 走 Wi-Fi，进入专门的分支教程",
-            _guidePhoneBranch,
-            () => SetGuideBranchAsync(true)));
+        // 原生 RadioButton：键盘、读屏、焦点环都由系统处理，不用自己画圆点。
+        var choices = new StackPanel { Spacing = 2 };
+        var localRadio = new RadioButton
+        {
+            GroupName = "GuideInputSource",
+            Content = new TextBlock
+            {
+                Text = "用电脑上的麦克风 —— 本机 / USB / 声卡，从下面下拉框挑",
+                TextWrapping = TextWrapping.Wrap,
+            },
+            IsChecked = !_guidePhoneBranch,
+        };
+        var phoneRadio = new RadioButton
+        {
+            GroupName = "GuideInputSource",
+            Content = new TextBlock
+            {
+                Text = "用手机当麦克风 —— 走 Wi-Fi，进入专门的分支教程",
+                TextWrapping = TextWrapping.Wrap,
+            },
+            IsChecked = _guidePhoneBranch,
+        };
+        // 先设 IsChecked 再订阅：否则渲染时会把分支又切一遍。
+        localRadio.Checked += async (_, _) =>
+        {
+            if (_guideRendering || _guideBusy) return;
+            await RunGuideActionAsync(() => SetGuideBranchAsync(false));
+        };
+        phoneRadio.Checked += async (_, _) =>
+        {
+            if (_guideRendering || _guideBusy) return;
+            await RunGuideActionAsync(() => SetGuideBranchAsync(true));
+        };
+        choices.Children.Add(localRadio);
+        choices.Children.Add(phoneRadio);
         _guideBody!.Children.Add(choices);
 
         if (_guidePhoneBranch)
@@ -1934,7 +1984,6 @@ def process(x, sr, params):
             }));
         }
 
-        AddGuideSkip("改用本机麦克风", () => SetGuideBranchAsync(false), advance: false);
         if (_guideNext is not null)
             _guideNext.IsEnabled = _guidePhoneReady || source == "mobile";
     }
@@ -1959,23 +2008,78 @@ def process(x, sr, params):
             return;
         }
 
-        AddGuideText("录制时按住正常音量朗读一句话即可，例如：「今天的声音测试，一二三四五」。",
-                     secondary: true);
-        AddGuideText("录制会自动占用麦克风；如果引擎正在运行，会先帮你停掉，配完再启动。",
-                     secondary: true);
+        AddGuideText("录制时用正常音量朗读下面这句话，录满 6 秒自动保存。");
+        _guideBody!.Children.Add(new Border
+        {
+            Padding = new Thickness(14, 12, 14, 12),
+            CornerRadius = new CornerRadius(8),
+            Background = (Brush)Application.Current.Resources["LayerFillColorDefaultBrush"],
+            Child = new TextBlock
+            {
+                Text = "「今天的声音测试，一二三四五，六七八九十。」",
+                FontSize = 16,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                TextWrapping = TextWrapping.Wrap,
+            },
+        });
+
+        // 大号倒计时：明确知道已经录了多久、还差多久。
+        var countdown = new TextBlock
+        {
+            Text = "0.0 / 6.0 秒",
+            FontSize = 26,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        _guideVoiceCountdown = countdown;
+        _guideBody.Children.Add(countdown);
+
+        // 32 根滚动电平柱：有没有真的收到声音，一眼就能看出来。
+        var wave = new Grid
+        {
+            Height = 64,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            ColumnSpacing = 3,
+        };
+        var bars = new Microsoft.UI.Xaml.Shapes.Rectangle[32];
+        for (int i = 0; i < bars.Length; i++)
+        {
+            wave.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) });
+            var bar = new Microsoft.UI.Xaml.Shapes.Rectangle
+            {
+                Width = 6,
+                Height = 4,
+                RadiusX = 3,
+                RadiusY = 3,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Fill = (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"],
+            };
+            bars[i] = bar;
+            Grid.SetColumn(bar, i);
+            wave.Children.Add(bar);
+        }
+        _guideVoiceBars = bars;
+        _guideBody.Children.Add(new Border
+        {
+            Padding = new Thickness(14, 10, 14, 10),
+            CornerRadius = new CornerRadius(8),
+            Background = (Brush)Application.Current.Resources["LayerFillColorDefaultBrush"],
+            Child = wave,
+        });
 
         var status = new TextBlock
         {
-            Text = _guideVoiceRecording ? "准备录音…" : "尚未录制",
+            Text = _guideVoiceRecording ? "正在录制…" : "尚未录制",
             FontSize = 12.5,
             TextWrapping = TextWrapping.Wrap,
+            HorizontalAlignment = HorizontalAlignment.Center,
             Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
         };
         var progress = new ProgressBar { Minimum = 0, Maximum = 100, Value = 0 };
         _guideVoiceStatus = status;
         _guideVoiceProgress = progress;
-        _guideBody!.Children.Add(progress);
         _guideBody.Children.Add(status);
+        _guideBody.Children.Add(progress);
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         if (_guideVoiceRecording)
@@ -1984,6 +2088,8 @@ def process(x, sr, params):
             actions.Children.Add(GuideActionButton("开始录制（6 秒）", StartGuideVoiceAsync, accent: true));
         _guideBody.Children.Add(actions);
 
+        AddGuideText("录制会自动占用麦克风；如果引擎正在运行，会先帮你停掉，配完再启动。",
+                     secondary: true);
         AddGuideSkip("暂时跳过（只用基础处理）");
         if (_guideNext is not null) _guideNext.IsEnabled = false;
     }
@@ -2022,6 +2128,21 @@ def process(x, sr, params):
         if (_guideVoiceTimer is not null) _guideVoiceTimer.Stop();
     }
 
+    /// <summary>把最新电平推进波形数组，柱子整体左移、新值从右边进入。</summary>
+    private void UpdateGuideVoiceBars(double levelDb)
+    {
+        if (_guideVoiceBars is null) return;
+        // -58 dB 以下算静音，-8 dB 以上顶满，中间线性映射。
+        double norm = _guideVoiceRecording
+            ? Math.Clamp((levelDb + 58.0) / 50.0, 0, 1)
+            : 0;
+        for (int i = 0; i < _guideVoiceLevels.Length - 1; i++)
+            _guideVoiceLevels[i] = _guideVoiceLevels[i + 1];
+        _guideVoiceLevels[^1] = norm;
+        for (int i = 0; i < _guideVoiceBars.Length; i++)
+            _guideVoiceBars[i].Height = 4 + _guideVoiceLevels[i] * 56;
+    }
+
     private async void GuideVoiceTimer_Tick(DispatcherQueueTimer sender, object args)
     {
         if (!_connected || _guideDialog is null) { StopGuideVoiceTimer(); return; }
@@ -2037,9 +2158,11 @@ def process(x, sr, params):
             if (_guideVoiceProgress is not null)
                 _guideVoiceProgress.Value = seconds > 0
                     ? Math.Clamp(elapsed / seconds * 100, 0, 100) : 0;
+            if (_guideVoiceCountdown is not null)
+                _guideVoiceCountdown.Text = $"{elapsed:0.0} / {seconds:0.0} 秒";
             if (_guideVoiceStatus is not null)
-                _guideVoiceStatus.Text = msg.Length > 0
-                    ? msg : $"录制中… {elapsed:0.0} / {seconds:0.0} 秒";
+                _guideVoiceStatus.Text = msg.Length > 0 ? msg : "正在录制…";
+            UpdateGuideVoiceBars(Num(st, "levelDb", -90));
 
             if (recording) return;
 
@@ -2316,23 +2439,7 @@ def process(x, sr, params):
             ("验证", "回到「主控」页说话，输出电平跳动就通了", true),
         });
 
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        actions.Children.Add(GuideActionButton("复制 CABLE Output", async () =>
-        {
-            var package = new DataPackage();
-            package.SetText("CABLE Output (VB-Audio Virtual Cable)");
-            Clipboard.SetContent(package);
-            ShowGuideToast("已复制设备名，去 OBS 里粘贴选择");
-            await Task.CompletedTask;
-        }, accent: true));
-        actions.Children.Add(GuideActionButton("回主控页看电平", () =>
-        {
-            _guideDialog?.Hide();
-            ShowPage("live");
-            return Task.CompletedTask;
-        }));
-        _guideBody!.Children.Add(actions);
-
+        AddGuideText("配好 OBS 后点「下一步」收尾。", secondary: true);
         if (_guideNext is not null) _guideNext.IsEnabled = true;
     }
 
@@ -2446,48 +2553,6 @@ def process(x, sr, params):
             _guideBusy = false;
             await RenderGuideStepAsync();
         }
-    }
-
-    /// <summary>单选项：点一下切换，选中态用强调色点标出来。</summary>
-    private Border GuideRadio(string text, bool selected, Func<Task> onPick)
-    {
-        var grid = new Grid { ColumnSpacing = 10 };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-        var dot = new TextBlock
-        {
-            Text = selected ? "●" : "○",
-            FontSize = 14,
-            VerticalAlignment = VerticalAlignment.Top,
-            Foreground = selected
-                ? (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"]
-                : (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
-        };
-        grid.Children.Add(dot);
-
-        var label = new TextBlock
-        {
-            Text = text,
-            FontSize = 13,
-            TextWrapping = TextWrapping.Wrap,
-        };
-        Grid.SetColumn(label, 1);
-        grid.Children.Add(label);
-
-        var card = new Border
-        {
-            Padding = new Thickness(12, 9, 12, 9),
-            CornerRadius = new CornerRadius(6),
-            Background = (Brush)Application.Current.Resources["LayerFillColorDefaultBrush"],
-            Child = grid,
-        };
-        card.PointerPressed += async (_, _) =>
-        {
-            if (_guideBusy) return;
-            await RunGuideActionAsync(onPick);
-        };
-        return card;
     }
 
     private void AddGuideText(string text, bool secondary = false)
@@ -3518,27 +3583,85 @@ def process(x, sr, params):
     // ------------------------------------------------------------------
     private async void UpdateCheck_Click(object sender, RoutedEventArgs e)
     {
-        if (!_connected) return;
-        UpdateStatusText.Text = "正在检查更新…";
+        if (!_connected || _updateChecking) return;
+        _updateChecking = true;
+
+        // 检查走的是 GitHub 网络请求，可能要十几秒。只改一行文字用户会以为卡死，
+        // 这里用模态进度框挡住整个界面，明确告诉他程序还在干活。
+        var panel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 14,
+            MinWidth = 320,
+        };
+        panel.Children.Add(new ProgressRing
+        {
+            IsActive = true,
+            Width = 36,
+            Height = 36,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        panel.Children.Add(new TextBlock
+        {
+            Text = "正在检查更新，请稍候…\n网络较慢时可能需要十几秒。",
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = "检查更新",
+            Content = panel,
+        };
+        // 检查期间连 Esc 也不让关，避免用户把「关掉了」当成「检查完了」。
+        dialog.Closing += (_, args) => { if (_updateChecking) args.Cancel = true; };
+
+        long started = Environment.TickCount64;
+        Windows.Foundation.IAsyncOperation<ContentDialogResult> showing;
         try
         {
-            var info = await _client.CallAsync("update_check", null, 20000);
-            if (!Bool(info, "ok"))
-            {
-                UpdateStatusText.Text = Str(info, "error");
-                return;
-            }
-            _updateInfo = info.Clone();
-            _updateAvailable = Bool(info, "available");
-            UpdateInstallButton.IsEnabled = _updateAvailable;
-            UpdateStatusText.Text = _updateAvailable
-                ? $"发现新版本 {Str(info, "latest")}（当前 {Str(info, "current")}），下载后会自动校验收据。"
-                : $"已是最新版本（{Str(info, "current")}）。";
+            showing = dialog.ShowAsync();
         }
         catch (Exception ex)
         {
-            UpdateStatusText.Text = ex.Message;
+            // 同一时间只能有一个 ContentDialog；别让按钮永久卡在「检查中」。
+            _updateChecking = false;
+            UpdateStatusText.Text = "请先关闭其他对话框再试：" + ex.Message;
+            return;
         }
+        string message;
+        try
+        {
+            var info = await _client.CallAsync("update_check", null, 30000);
+            if (!Bool(info, "ok"))
+            {
+                message = Str(info, "error");
+            }
+            else
+            {
+                _updateInfo = info.Clone();
+                _updateAvailable = Bool(info, "available");
+                UpdateInstallButton.IsEnabled = _updateAvailable;
+                message = _updateAvailable
+                    ? $"发现新版本 {Str(info, "latest")}（当前 {Str(info, "current")}），下载后会自动校验收据。"
+                    : $"已是最新版本（{Str(info, "current")}）。";
+            }
+        }
+        catch (Exception ex)
+        {
+            message = "检查失败：" + ex.Message;
+        }
+        finally
+        {
+            // 网络很快时弹窗一闪而过反而像闪屏，至少让它显示 450ms。
+            long left = 450 - (Environment.TickCount64 - started);
+            if (left > 0) await Task.Delay((int)left);
+            _updateChecking = false;
+            dialog.Hide();
+            try { await showing; } catch { }
+        }
+        UpdateStatusText.Text = message;
     }
 
     private async void UpdateInstall_Click(object sender, RoutedEventArgs e)
