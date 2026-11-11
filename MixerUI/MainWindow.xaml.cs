@@ -88,6 +88,11 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
         SetupTitleBar();
+        // 侧边栏收起成 52px 窄条时，底部操作区放不下，整块隐藏。
+        // 用属性回调而不是 PaneOpening/PaneClosing：窗口变窄时 NavigationView 会自动收起，
+        // 那条路径不一定触发 Closing 事件。
+        Nav.RegisterPropertyChangedCallback(NavigationView.IsPaneOpenProperty, (_, _) =>
+            PaneFooterBox.Visibility = Nav.IsPaneOpen ? Visibility.Visible : Visibility.Collapsed);
         App.Trace("mainwindow: xaml loaded");
         // Negative ranges must be set in code: assigning Maximum below the
         // default Minimum (0) is rejected by RangeBase during XAML load.
@@ -857,7 +862,7 @@ public sealed partial class MainWindow : Window
         bool loading = Bool(status, "loading");
         _running = running;
         RunStateText.Text = loading ? "正在加载 AI 模型…" : running ? "运行中" : "已停止";
-        EnginePillText.Text = loading ? "引擎 · 加载中" : running ? "引擎 · 运行中" : "引擎 · 已停止";
+        EnginePillText.Text = loading ? "引擎加载中" : running ? "引擎运行中" : "引擎已停止";
         var backend = Str(status, "backend");
         BackendText.Text = backend.Length > 0 ? backend : "—";
 

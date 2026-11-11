@@ -33,7 +33,7 @@
         </Border>
 
         <NavigationView x:Name="Nav" Grid.Row="1"
-                        PaneDisplayMode="Left" IsBackButtonVisible="Collapsed" IsSettingsVisible="False"
+                        PaneDisplayMode="Auto" IsBackButtonVisible="Collapsed" IsSettingsVisible="False"
                         IsPaneToggleButtonVisible="True" AlwaysShowHeader="False"
                         OpenPaneLength="208" CompactPaneLength="52"
                         SelectionChanged="Nav_SelectionChanged">
@@ -93,7 +93,8 @@
             </NavigationView.MenuItems>
 
             <NavigationView.PaneFooter>
-                <StackPanel Spacing="8" Margin="4,0,4,8">
+                <!-- 收起时整块隐藏：52px 窄条放不下状态和按钮，硬挤会竖排并溢出到主内容区 -->
+                <StackPanel x:Name="PaneFooterBox" Spacing="8" Margin="4,0,4,8">
                     <!-- 状态与操作：从顶栏移到侧边栏底部，顶栏只留 Logo 和软件名 -->
                     <StackPanel Spacing="3">
                         <Grid ColumnSpacing="6">
@@ -111,7 +112,7 @@
                             <ProgressRing x:Name="BusyRing" Grid.Column="2" Width="12" Height="12"
                                           IsActive="False" />
                         </Grid>
-                        <TextBlock x:Name="EnginePillText" Text="引擎 · 已停止" FontSize="11"
+                        <TextBlock x:Name="EnginePillText" Text="引擎已停止" FontSize="11"
                                    TextTrimming="CharacterEllipsis"
                                    Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                     </StackPanel>
