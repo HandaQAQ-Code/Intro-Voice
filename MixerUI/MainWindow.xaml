@@ -36,6 +36,7 @@
                         PaneDisplayMode="Auto" IsBackButtonVisible="Collapsed" IsSettingsVisible="False"
                         IsPaneToggleButtonVisible="True" AlwaysShowHeader="False"
                         OpenPaneLength="208" CompactPaneLength="52"
+                        CompactModeThresholdWidth="0" ExpandedModeThresholdWidth="1008"
                         SelectionChanged="Nav_SelectionChanged">
 
             <NavigationView.PaneHeader>
