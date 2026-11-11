@@ -14,52 +14,20 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- 顶栏：整条作为可拖拽标题区，右侧留给系统窗口按钮 -->
+        <!-- 顶栏：只放 Logo 与软件名，整条作为可拖拽标题区，右侧留给系统窗口按钮 -->
         <Border x:Name="AppTitleBar" Grid.Row="0" Padding="16,8,150,8"
                 Background="{ThemeResource LayerFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
                 BorderThickness="0,0,0,1">
-            <Grid ColumnSpacing="12">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-
-                <!-- 拖拽层铺满整条标题栏：按钮在上层照常可点，其余空白处都能拖动、双击最大化 -->
-                <Grid x:Name="AppDragRegion" Background="Transparent" VerticalAlignment="Stretch"
-                      Grid.ColumnSpan="4" MinWidth="220">
-                    <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center"
-                                IsHitTestVisible="False">
-                        <Image Source="ms-appx:///Assets/app-icon.png" Width="30" Height="30" />
-                        <StackPanel Spacing="0" VerticalAlignment="Center">
-                            <TextBlock Text="Intro Voice" FontSize="15" FontWeight="SemiBold" />
-                            <TextBlock Text="音拓 · 直播调音台" FontSize="11"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        </StackPanel>
+            <Grid x:Name="AppDragRegion" Background="Transparent" VerticalAlignment="Stretch">
+                <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center"
+                            IsHitTestVisible="False">
+                    <Image Source="ms-appx:///Assets/app-icon.png" Width="30" Height="30" />
+                    <StackPanel Spacing="0" VerticalAlignment="Center">
+                        <TextBlock Text="Intro Voice" FontSize="15" FontWeight="SemiBold" />
+                        <TextBlock Text="音拓 · 直播调音台" FontSize="11"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     </StackPanel>
-                </Grid>
-
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center"
-                            Margin="12,0,0,0">
-                    <Border Style="{StaticResource PillBorder}">
-                        <StackPanel Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
-                            <Ellipse x:Name="StatusDot" Width="8" Height="8" Fill="Gray" />
-                            <TextBlock x:Name="ServiceText" Text="正在连接调音台服务…" FontSize="12" />
-                        </StackPanel>
-                    </Border>
-                    <Border Style="{StaticResource PillBorder}">
-                        <TextBlock x:Name="EnginePillText" Text="引擎 · 已停止" FontSize="12" />
-                    </Border>
-                </StackPanel>
-
-                <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                    <ProgressRing x:Name="BusyRing" Width="18" Height="18" IsActive="False" />
-                    <Button x:Name="MuteButton" Content="静音" Click="Mute_Click" IsEnabled="False" />
-                    <Button x:Name="StartButton" Content="启动链路" Style="{StaticResource AccentButtonStyle}"
-                            Click="Start_Click" IsEnabled="False" />
-                    <Button x:Name="StopButton" Content="停止" Click="Stop_Click" IsEnabled="False" />
                 </StackPanel>
             </Grid>
         </Border>
@@ -125,7 +93,44 @@
             </NavigationView.MenuItems>
 
             <NavigationView.PaneFooter>
-                <StackPanel Spacing="6" Margin="4,0,4,8">
+                <StackPanel Spacing="8" Margin="4,0,4,8">
+                    <!-- 状态与操作：从顶栏移到侧边栏底部，顶栏只留 Logo 和软件名 -->
+                    <StackPanel Spacing="3">
+                        <Grid ColumnSpacing="6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Ellipse x:Name="StatusDot" Width="7" Height="7" Fill="Gray"
+                                     VerticalAlignment="Center" />
+                            <TextBlock x:Name="ServiceText" Grid.Column="1"
+                                       Text="正在连接调音台服务…" FontSize="11"
+                                       TextTrimming="CharacterEllipsis"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <ProgressRing x:Name="BusyRing" Grid.Column="2" Width="12" Height="12"
+                                          IsActive="False" />
+                        </Grid>
+                        <TextBlock x:Name="EnginePillText" Text="引擎 · 已停止" FontSize="11"
+                                   TextTrimming="CharacterEllipsis"
+                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                    </StackPanel>
+
+                    <Grid ColumnSpacing="6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Button x:Name="StartButton" Content="启动" Grid.Column="0"
+                                Style="{StaticResource AccentButtonStyle}" Click="Start_Click"
+                                IsEnabled="False" HorizontalAlignment="Stretch" Padding="0,6" />
+                        <Button x:Name="StopButton" Content="停止" Grid.Column="1"
+                                Click="Stop_Click" IsEnabled="False"
+                                HorizontalAlignment="Stretch" Padding="0,6" />
+                    </Grid>
+                    <Button x:Name="MuteButton" Content="静音" Click="Mute_Click" IsEnabled="False"
+                            HorizontalAlignment="Stretch" Padding="0,6" />
+
                     <Button Click="Tutorial_Click"
                             HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
                             Padding="12,9" MinHeight="40">
