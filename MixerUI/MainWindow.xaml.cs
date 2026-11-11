@@ -1534,7 +1534,9 @@ def process(x, sr, params):
         head.Children.Add(closeX);
 
         // 宽度不能超过 ContentDialog 内容区，否则右侧按钮会被裁掉。
-        var root = new StackPanel { Spacing = 12, Width = 512 };
+        // ContentDialog 最大宽 548、左右各 24 padding，内容区只有 500。
+        // 之前固定 512 会溢出 12px，右边被裁；480 给滚动条也留了余量。
+        var root = new StackPanel { Spacing = 12, Width = 480 };
         root.Children.Add(head);
         root.Children.Add(new ScrollViewer
         {
@@ -2003,11 +2005,10 @@ def process(x, sr, params):
                 ("声纹文件", $"已录入 {Num(voice, "seconds", 0):0.0} 秒", true),
                 ("AI 档", "可以启用 CPU / GPU 档", true),
             });
-            _guideBody!.Children.Add(GuideActionButton("重新录一段（6 秒）", StartGuideVoiceAsync));
-            if (_guideNext is not null) _guideNext.IsEnabled = true;
-            return;
         }
 
+        // 录制区始终渲染：即使已有声纹，点「重新录一段」也要能看到波形和倒计时，
+        // 否则用户会以为重录没有生效。
         AddGuideText("录制时用正常音量朗读下面这句话，录满 6 秒自动保存。");
         _guideBody!.Children.Add(new Border
         {
@@ -2059,6 +2060,8 @@ def process(x, sr, params):
             wave.Children.Add(bar);
         }
         _guideVoiceBars = bars;
+        // 没在录制时把残留电平清零，重建后才不会先闪一排旧柱子。
+        if (!_guideVoiceRecording) Array.Clear(_guideVoiceLevels);
         _guideBody.Children.Add(new Border
         {
             Padding = new Thickness(14, 10, 14, 10),
@@ -2085,13 +2088,28 @@ def process(x, sr, params):
         if (_guideVoiceRecording)
             actions.Children.Add(GuideActionButton("取消录制", CancelGuideVoiceAsync));
         else
-            actions.Children.Add(GuideActionButton("开始录制（6 秒）", StartGuideVoiceAsync, accent: true));
+            actions.Children.Add(GuideActionButton(
+                ready ? "重新录一段（6 秒）" : "开始录制（6 秒）",
+                StartGuideVoiceAsync, accent: true));
         _guideBody.Children.Add(actions);
 
         AddGuideText("录制会自动占用麦克风；如果引擎正在运行，会先帮你停掉，配完再启动。",
                      secondary: true);
-        AddGuideSkip("暂时跳过（只用基础处理）");
-        if (_guideNext is not null) _guideNext.IsEnabled = false;
+        if (_guideVoiceRecording)
+        {
+            // 录制中先别走，避免录到一半跳到下一步、状态对不上。
+            if (_guideNext is not null) _guideNext.IsEnabled = false;
+        }
+        else if (ready)
+        {
+            // 已有声纹，不录也能直接下一步。
+            if (_guideNext is not null) _guideNext.IsEnabled = true;
+        }
+        else
+        {
+            AddGuideSkip("暂时跳过（只用基础处理）");
+            if (_guideNext is not null) _guideNext.IsEnabled = false;
+        }
     }
 
     private async Task StartGuideVoiceAsync()
@@ -2307,7 +2325,7 @@ def process(x, sr, params):
         var combo = new ComboBox
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            MinWidth = 430,
+            MinWidth = 410,
         };
         ComboBoxItem? current = null;
         ComboBoxItem? fallback = null;
@@ -2517,7 +2535,7 @@ def process(x, sr, params):
             ItemsSource = list,
             DisplayMemberPath = "Display",
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            MinWidth = 430,
+            MinWidth = 410,
             PlaceholderText = list.Count > 0 ? "从列表里选择一个" : "没有检测到设备",
         };
         var selected = list.FirstOrDefault(d => d.Id == currentId);
