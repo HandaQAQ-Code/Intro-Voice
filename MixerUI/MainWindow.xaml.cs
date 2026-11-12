@@ -1723,7 +1723,7 @@ def process(x, sr, params):
     private enum GuideStep
     {
         Welcome, Mic, PhoneStart, PhoneConnect, Voice,
-        Cable, Output, Quality, Engine, Obs, Done,
+        Cable, Output, Python, Quality, Engine, Obs, Done,
     }
 
     private int _guideStep;
@@ -1770,6 +1770,7 @@ def process(x, sr, params):
         steps.Add(GuideStep.Voice);
         steps.Add(GuideStep.Cable);
         steps.Add(GuideStep.Output);
+        steps.Add(GuideStep.Python);
         steps.Add(GuideStep.Quality);
         steps.Add(GuideStep.Engine);
         steps.Add(GuideStep.Obs);
@@ -1787,9 +1788,10 @@ def process(x, sr, params):
         GuideStep.Voice => 2,
         GuideStep.Cable => 3,
         GuideStep.Output => 4,
-        GuideStep.Quality => 5,
-        GuideStep.Engine => 6,
-        GuideStep.Obs => 7,
+        GuideStep.Python => 5,
+        GuideStep.Quality => 6,
+        GuideStep.Engine => 7,
+        GuideStep.Obs => 8,
         _ => 0,
     };
 
@@ -1808,6 +1810,7 @@ def process(x, sr, params):
                     GuideStep.Voice => "录一段声纹给 AI 模型",
                     GuideStep.Cable => "安装 VB-CABLE 虚拟声卡驱动",
                     GuideStep.Output => "选输出到虚拟声卡",
+                    GuideStep.Python => "检测 Python 环境（GPU 档用）",
                     GuideStep.Quality => "选音质档",
                     GuideStep.Engine => "启动引擎",
                     GuideStep.Obs => "在 OBS 里采集",
@@ -2020,6 +2023,7 @@ def process(x, sr, params):
                     case GuideStep.Voice: RenderGuideVoice(); break;
                     case GuideStep.Cable: RenderGuideCable(); break;
                     case GuideStep.Output: RenderGuideOutput(); break;
+                    case GuideStep.Python: RenderGuidePython(); break;
                     case GuideStep.Quality: RenderGuideQuality(); break;
                     case GuideStep.Engine: RenderGuideEngine(); break;
                     case GuideStep.Obs: RenderGuideObs(); break;
@@ -2062,7 +2066,7 @@ def process(x, sr, params):
         {
             ("1", "选麦克风（本机，或手机当麦克风）", false),
             ("2", "录声纹、装 CABLE 驱动、选输出", false),
-            ("3", "选音质档 → 启动 → OBS 采集", false),
+            ("3", "检测 Python 环境、选音质档 → 启动 → OBS 采集", false),
         });
         AddGuideText("全程约三分钟。已经配好的项会自动打勾，可以直接点「下一步」跳过。", secondary: true);
         if (_guideNext is not null) _guideNext.IsEnabled = true;
@@ -2686,6 +2690,161 @@ def process(x, sr, params):
         if (_guideNext is not null) _guideNext.IsEnabled = ready;
     }
 
+    // -- Python 环境：自动检测 + 下拉选择 / 手动指定 ----------------------
+    private List<GuidePythonItem> _guidePythons = new();
+    private bool _guidePythonScanning;
+
+    private void RenderGuidePython()
+    {
+        AddGuideText("AI 音质档（CPU / GPU）要靠本机的 Python 环境运行 CUDA 版 PyTorch。"
+                     + "程序会自动检测本机所有 Python；选一个带 CUDA 的即可，不改也不影响「关闭」档。");
+
+        var status = new TextBlock
+        {
+            Text = "正在检测本机 Python 环境…",
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12.5,
+            Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+        };
+        var host = new StackPanel { Spacing = 6, Margin = new Thickness(0, 2, 0, 2) };
+        _guideBody!.Children.Add(status);
+        _guideBody.Children.Add(host);
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var browse = new Button { Content = "手动指定 python.exe…" };
+        browse.Click += async (_, _) =>
+        {
+            var picked = await PickPythonExeAsync();
+            if (picked is null) return;
+            await RunGuideActionAsync(() => SetGuidePythonAsync(picked));
+        };
+        var rescan = new Button { Content = "重新检测" };
+        rescan.Click += async (_, _) => await RunGuideActionAsync(async () =>
+        {
+            await _client.CallAsync("settings_scan_python",
+                new JsonObject { ["force"] = true }, 180000);
+        });
+        actions.Children.Add(browse);
+        actions.Children.Add(rescan);
+        _guideBody.Children.Add(actions);
+
+        if (_guideNext is not null) _guideNext.IsEnabled = true;
+        _ = FillGuidePythonAsync(status, host);
+    }
+
+    /// <summary>异步填 Python 列表：扫描要起子进程，先让标题和按钮出来，不阻塞这一步的渲染。</summary>
+    private async Task FillGuidePythonAsync(TextBlock status, StackPanel host)
+    {
+        if (!_connected)
+        {
+            status.Text = "服务未连接，暂时无法检测 Python。";
+            return;
+        }
+        if (_guidePythonScanning) return;
+        _guidePythonScanning = true;
+        try
+        {
+            var result = await _client.CallAsync("settings_scan_python", null, 180000);
+            if (CurrentGuideStep() != GuideStep.Python) return;
+            _guidePythons = ParseGuidePythons(result);
+            host.Children.Clear();
+
+            string chosen = Str(result, "pythonPath");
+            string torch = "";
+            if (result.TryGetProperty("pythonDetected", out var detected)
+                && detected.ValueKind == JsonValueKind.Object)
+                torch = Str(detected, "torchVersion");
+
+            if (_guidePythons.Count == 0)
+            {
+                status.Text = "没有找到可用的 Python 3.11。可以点「手动指定 python.exe…」，"
+                              + "或先跳过这一步，继续用 CPU / 关闭档。";
+                return;
+            }
+
+            var combo = new ComboBox
+            {
+                ItemsSource = _guidePythons,
+                DisplayMemberPath = "Display",
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                MinWidth = 410,
+            };
+            var selected = _guidePythons.FirstOrDefault(
+                               p => p.Path.Equals(chosen, StringComparison.OrdinalIgnoreCase))
+                           ?? _guidePythons.FirstOrDefault(p => p.Cuda);
+            if (selected is not null) combo.SelectedItem = selected;
+            combo.SelectionChanged += async (_, _) =>
+            {
+                if (_guideRendering || _guideBusy) return;
+                if (combo.SelectedItem is not GuidePythonItem item) return;
+                await RunGuideActionAsync(() => SetGuidePythonAsync(item.Path));
+            };
+            host.Children.Add(combo);
+
+            status.Text = torch.Length > 0
+                ? $"✓ 已复用本机 CUDA 环境：torch {torch}（GPU 档可用）"
+                : "当前没有可用的 CUDA torch：GPU 档不可用，但 CPU / 关闭档不受影响。";
+        }
+        catch (Exception ex)
+        {
+            status.Text = "检测 Python 失败：" + ex.Message;
+        }
+        finally
+        {
+            _guidePythonScanning = false;
+        }
+    }
+
+    private static List<GuidePythonItem> ParseGuidePythons(JsonElement result)
+    {
+        var items = new List<GuidePythonItem>();
+        if (!result.TryGetProperty("pythons", out var arr) || arr.ValueKind != JsonValueKind.Array)
+            return items;
+        foreach (var entry in arr.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object) continue;
+            items.Add(new GuidePythonItem
+            {
+                Path = Str(entry, "python"),
+                Version = Str(entry, "version"),
+                Compatible = Bool(entry, "compatible"),
+                Cuda = Bool(entry, "cuda"),
+                TorchVersion = Str(entry, "torchVersion"),
+            });
+        }
+        // CUDA 可用的排最前，其次版本兼容的，再按版本号倒序。
+        return items
+            .OrderByDescending(p => p.Cuda)
+            .ThenByDescending(p => p.Compatible)
+            .ThenByDescending(p => p.Version)
+            .ToList();
+    }
+
+    private async Task SetGuidePythonAsync(string path)
+    {
+        await _client.CallAsync("settings_set",
+            new JsonObject { ["pythonPath"] = path }, 180000);
+        // 选完立刻重新判定 CUDA：下一步「音质档」必须马上反映这个结果。
+        var gpu = await _client.CallAsync("gpu_status",
+            new JsonObject { ["force"] = true }, 120000);
+        bool ok = Bool(gpu, "available");
+        string note = Str(gpu, "note");
+        ShowGuideToast(ok
+            ? $"已选用 {path}，CUDA 可用：{note}"
+            : $"已选用 {path}，但 GPU 档仍不可用：{note}");
+    }
+
+    private async Task<string?> PickPythonExeAsync()
+    {
+        var picker = new Windows.Storage.Pickers.FileOpenPicker();
+        picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.ComputerFolder;
+        picker.FileTypeFilter.Add(".exe");
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
+        var file = await picker.PickSingleFileAsync();
+        return file?.Path;
+    }
+
     // -- 音质档：下拉框 --------------------------------------------------
     private void RenderGuideQuality()
     {
@@ -2767,6 +2926,7 @@ def process(x, sr, params):
         await _client.CallAsync("guide_quality",
             new JsonObject { ["aiMode"] = item.Value }, 25000);
         ShowGuideToast("已切换到「" + item.Value.ToUpperInvariant() + "」档 ✓");
+        await ApplyGuideChangesToMainAsync();
     }
 
     private Task GoToGuideStepAsync(GuideStep kind)
@@ -2944,6 +3104,7 @@ def process(x, sr, params):
             await _client.CallAsync("settings_set",
                 new JsonObject { [saveKey] = deviceId }, 12000);
             ShowGuideToast("已保存 ✓");
+            await ApplyGuideChangesToMainAsync();
         }
         catch (Exception ex)
         {
@@ -2953,6 +3114,27 @@ def process(x, sr, params):
         {
             _guideBusy = false;
             await RenderGuideStepAsync();
+        }
+    }
+
+    /// <summary>
+    /// 引导里改过的配置立刻同步到主界面（设备下拉、音质档、DSP 等），
+    /// 关掉引导就能看到并使用新配置，不需要重启程序。
+    /// </summary>
+    private async Task ApplyGuideChangesToMainAsync()
+    {
+        if (!_connected) return;
+        try
+        {
+            var settings = await _client.CallAsync("settings_get", null, 30000);
+            if (settings.TryGetProperty("settings", out var full)
+                && full.ValueKind == JsonValueKind.Object)
+                ApplySettings(full);
+            ApplyDevices(await _client.CallAsync("devices", null, 60000));
+        }
+        catch (Exception ex)
+        {
+            App.Trace("guide: apply to main failed " + ex.Message);
         }
     }
 
@@ -3100,6 +3282,8 @@ def process(x, sr, params):
         {
             // 标记失败不影响使用；下次打开会再弹一次。
         }
+        // 收尾再整体同步一次，确保主界面与引擎配置完全一致。
+        await ApplyGuideChangesToMainAsync();
     }
 
     private TextBlock DocHeading(string text)

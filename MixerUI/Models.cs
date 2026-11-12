@@ -46,6 +46,29 @@ public sealed class GuideDevice
     public override string ToString() => Display;
 }
 
+/// <summary>新手引导「Python 环境」下拉项：版本、路径与 CUDA torch 状态。</summary>
+public sealed class GuidePythonItem
+{
+    public string Path { get; init; } = "";
+    public string Version { get; init; } = "";
+    public bool Compatible { get; init; }
+    public bool Cuda { get; init; }
+    public string TorchVersion { get; init; } = "";
+
+    public string Display
+    {
+        get
+        {
+            string state = Cuda
+                ? $"✓ CUDA torch {TorchVersion}"
+                : Compatible ? "未装 CUDA torch" : "版本不兼容（需 3.11）";
+            return $"Python {Version} · {state} · {Path}";
+        }
+    }
+
+    public override string ToString() => Display;
+}
+
 /// <summary>新手引导「音质档」下拉项；不可用的档位会在文字里说明原因。</summary>
 public sealed class GuideQualityItem
 {

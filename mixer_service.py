@@ -560,11 +560,13 @@ def gpu_capability() -> tuple[bool, str]:
     """Whether the GPU tier can run here, plus a short human readable reason."""
     try:
         import torch
-    except Exception:
-        return False, "未安装 CUDA 版 PyTorch（可复用本机 Python 环境，或点「下载 GPU 支持」）"
+    except Exception as exc:
+        # 把真实的 import 错误带出来：常见的是版本不匹配、缺 DLL、CUDA 库没装全。
+        LOG.warning("GPU 档：import torch 失败（%s: %s）", type(exc).__name__, exc, exc_info=True)
+        return False, f"未安装可用的 CUDA 版 PyTorch（{type(exc).__name__}: {exc}）"
     try:
         if not torch.cuda.is_available():
-            return False, "未检测到可用的 NVIDIA CUDA 设备"
+            return False, "未检测到可用的 NVIDIA CUDA 设备（torch 已导入，但 CUDA 不可用）"
         return True, str(torch.cuda.get_device_name(0))
     except Exception as exc:
         return False, f"CUDA 初始化失败：{exc}"
@@ -1386,6 +1388,9 @@ class Service:
 
     def cmd_gpu_status(self, request):
         # 先尝试自动复用本机已有的 CUDA torch：检测到就直接用，不要求用户点按钮、更不提示下载。
+        if request.get("force"):
+            gpu_install.reset_caches()
+            _GUIDE_GPU_CACHE["at"] = 0.0
         preferred = self._preferred_python()
         reused = gpu_install.auto_enable_native(ROOT, preferred)
         status = gpu_install.read_status(ROOT)
@@ -1670,6 +1675,8 @@ class Service:
         """读应用级设置，立即返回（不做 Python 扫描，避免设置页卡住）。"""
         pref = gpu_install.read_native_preference(ROOT)
         return {
+            # 完整设置：引导结束后主界面用它一次性同步音质档、增益、设备等。
+            "settings": self.settings,
             "pythonPath": str(self.settings.get("pythonPath") or ""),
             "checkUpdates": bool(self.settings.get("checkUpdates", True)),
             "tutorialSeen": bool(self.settings.get("tutorialSeen", False)),
@@ -1699,8 +1706,16 @@ class Service:
             path = str(request["pythonPath"] or "").strip()
             if path and not Path(path).is_file():
                 raise RuntimeError("指定的 Python 路径不存在或不是文件")
+            previous = str(self.settings.get("pythonPath") or "").strip()
             self.settings["pythonPath"] = path
             changed = True
+            if path.lower() != previous.lower():
+                # 换了 Python：作废旧复用记录，清缓存并按新路径重新探测 CUDA，
+                # 这样引导/设置页下一步立刻看到新的判定结果。
+                gpu_install.reset_caches()
+                gpu_install.set_native_preference(ROOT, False)
+                _GUIDE_GPU_CACHE["at"] = 0.0
+                gpu_install.auto_enable_native(ROOT, self._preferred_python())
         if "checkUpdates" in request:
             self.settings["checkUpdates"] = bool(request["checkUpdates"])
             changed = True
