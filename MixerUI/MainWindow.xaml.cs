@@ -83,6 +83,15 @@ public sealed partial class MainWindow : Window
     private bool _applyingDevices;
     private string _theme = "system";
 
+    // 悬浮窗与托盘驻留
+    private FloatingWindow? _floating;
+    private TrayIcon? _tray;
+    private FloatingConfig _floatingConfig = new();
+    private bool _floatingSyncing;
+    private bool _exiting;
+    private bool _trayHintShown;
+    private DispatcherQueueTimer? _floatingSaveTimer;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -206,6 +215,8 @@ public sealed partial class MainWindow : Window
 
         SetMicView("virtual");
         SetMicSource("device", false);
+        BuildFloatingItemCheckboxes();
+        SetupTrayAndClosing();
         Closed += OnClosed;
         App.Trace("mainwindow: ctor end");
         _ = ConnectAsync();
@@ -291,6 +302,12 @@ public sealed partial class MainWindow : Window
         };
         ApplyTitleBarColors();
         SyncThemeToggle();
+        _floating?.SetTheme(_theme switch
+        {
+            "light" => ElementTheme.Light,
+            "dark" => ElementTheme.Dark,
+            _ => ElementTheme.Default,
+        });
         if (persist) _ = SaveThemeAsync(_theme);
     }
 
@@ -516,6 +533,10 @@ public sealed partial class MainWindow : Window
             UpdateTierTexts();
             // 主题存在 settings 里，接上服务后立刻按用户上次的选择应用。
             ApplyTheme(Str(settings, "theme"));
+            // 悬浮窗同样跟着设置走：上次开着的话启动后直接出现。
+            if (settings.TryGetProperty("floating", out var floating)
+                && floating.ValueKind == JsonValueKind.Object)
+                ApplyFloatingConfig(floating);
         }
         finally
         {
@@ -939,6 +960,7 @@ public sealed partial class MainWindow : Window
         SyncMuteCompact();
 
         ApplySystemMetrics(status);
+        UpdateFloatingData(status);
         ApplySpectrum(status, running);
         ApplyDspStatus(status);
 
@@ -1091,6 +1113,281 @@ public sealed partial class MainWindow : Window
         }
         SystemDetailText.Text = (gpuName.Length > 0 ? gpuName + " · " : "") +
                                 $"内存占用 {ramUsed:0} MB" + (gpu >= 0 ? "" : " · 未检测到 NVIDIA GPU");
+    }
+
+    // ------------------------------------------------------------------
+    // 悬浮窗 + 托盘驻留
+    // ------------------------------------------------------------------
+    private static readonly (string Id, string Label)[] FloatingItems =
+    {
+        ("status", "运行状态"), ("ai", "音质档"), ("input", "输入电平"),
+        ("output", "输出电平"), ("latency", "延迟"), ("cpu", "CPU"),
+        ("gpu", "GPU"), ("ram", "内存"),
+    };
+
+    private bool FloatingVisible => _floating is not null && _floating.AppWindow.IsVisible;
+
+    private void BuildFloatingItemCheckboxes()
+    {
+        FloatItemsPanel.Children.Clear();
+        foreach (var (id, label) in FloatingItems)
+        {
+            var box = new CheckBox
+            {
+                Content = label,
+                Tag = id,
+                IsChecked = _floatingConfig.Items.Contains(id),
+                MinWidth = 0,
+            };
+            box.Checked += FloatItem_Toggled;
+            box.Unchecked += FloatItem_Toggled;
+            FloatItemsPanel.Children.Add(box);
+        }
+    }
+
+    /// <summary>托盘图标 + 关闭主窗口改为隐藏（后台驻留）。</summary>
+    private void SetupTrayAndClosing()
+    {
+        try
+        {
+            _tray = new TrayIcon("Intro Voice 音拓",
+                ShowMainWindow, () => SetFloating(!FloatingVisible), ToggleEngineFromTray,
+                ExitApplication, () => (_running, FloatingVisible));
+            App.Trace("tray: created");
+        }
+        catch (Exception ex)
+        {
+            App.Trace("tray: setup failed " + ex.Message);
+        }
+        AppWindow.Closing += OnMainClosing;
+    }
+
+    private void OnMainClosing(AppWindow sender, AppWindowClosingEventArgs args)
+    {
+        // 托盘没建起来时不能藏窗口，否则用户再也找不回来；直接按正常退出处理。
+        if (_exiting || _tray is null) return;
+        // 关闭 = 收进托盘：音频链路继续跑，悬浮窗继续更新。
+        args.Cancel = true;
+        AppWindow.Hide();
+        if (!_trayHintShown)
+        {
+            _trayHintShown = true;
+            _tray?.ShowBalloon("Intro Voice 仍在后台运行",
+                "音频链路不会中断。双击托盘图标恢复窗口，右键可启动 / 停止或退出。");
+        }
+    }
+
+    private void ShowMainWindow()
+    {
+        AppWindow.Show();
+        Activate();
+        if (AppWindow.Presenter is OverlappedPresenter presenter
+            && presenter.State == OverlappedPresenterState.Minimized)
+            presenter.Restore();
+    }
+
+    private void ToggleEngineFromTray()
+    {
+        if (!_connected || _transportBusy) return;
+        _ = (_running ? StopAsync() : StartAsync());
+    }
+
+    private void ExitApplication()
+    {
+        if (_exiting) return;
+        _exiting = true;
+        try { _tray?.Dispose(); } catch { }
+        _tray = null;
+        try { _floating?.Close(); } catch { }
+        _floating = null;
+        _statusTimer.Stop();
+        _client.Dispose();
+        Close();
+    }
+
+    private void SetFloating(bool show)
+    {
+        _floatingConfig.Enabled = show;
+        if (show)
+        {
+            _floating ??= CreateFloatingWindow();
+            _floating.SetTheme(CurrentFloatingTheme());
+            _floating.ShowFloating();
+        }
+        else
+        {
+            _floating?.HideFloating();
+        }
+        SyncFloatingControls();
+        SaveFloatingSoon();
+    }
+
+    private FloatingWindow CreateFloatingWindow()
+    {
+        var window = new FloatingWindow(_floatingConfig);
+        window.ConfigChanged += () =>
+        {
+            SyncFloatingControls();
+            SaveFloatingSoon();
+        };
+        return window;
+    }
+
+    private ElementTheme CurrentFloatingTheme() => _theme switch
+    {
+        "light" => ElementTheme.Light,
+        "dark" => ElementTheme.Dark,
+        _ => ElementTheme.Default,
+    };
+
+    /// <summary>把服务端保存的悬浮窗配置应用到界面（启动时、设置页刷新时都会走）。</summary>
+    private void ApplyFloatingConfig(JsonElement floating)
+    {
+        _floatingSyncing = true;
+        try
+        {
+            _floatingConfig.Enabled = Bool(floating, "enabled");
+            _floatingConfig.Opacity = Math.Clamp(Num(floating, "opacity", 0.92), 0.2, 1.0);
+            _floatingConfig.X = (int)Num(floating, "x", -1);
+            _floatingConfig.Y = (int)Num(floating, "y", -1);
+            var items = new HashSet<string>();
+            if (floating.TryGetProperty("items", out var array) && array.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var entry in array.EnumerateArray())
+                {
+                    if (entry.ValueKind != JsonValueKind.String) continue;
+                    string id = entry.GetString() ?? "";
+                    if (Array.Exists(FloatingConfig.AllItems, x => x == id)) items.Add(id);
+                }
+            }
+            _floatingConfig.Items = items.Count > 0
+                ? items : new HashSet<string>(FloatingConfig.AllItems);
+
+            if (_floatingConfig.Enabled)
+            {
+                _floating ??= CreateFloatingWindow();
+                _floating.Rebuild();
+                _floating.SetTheme(CurrentFloatingTheme());
+                _floating.ShowFloating();
+            }
+            else
+            {
+                _floating?.HideFloating();
+            }
+            BuildFloatingItemCheckboxes();
+            SyncFloatingControls();
+        }
+        finally
+        {
+            _floatingSyncing = false;
+        }
+    }
+
+    private void SyncFloatingControls()
+    {
+        bool previous = _floatingSyncing;
+        _floatingSyncing = true;
+        try
+        {
+            if (FloatEnabledSwitch is not null) FloatEnabledSwitch.IsOn = _floatingConfig.Enabled;
+            if (FloatOpacitySlider is not null)
+                FloatOpacitySlider.Value = Math.Round(_floatingConfig.Opacity * 100);
+            if (FloatOpacityText is not null)
+                FloatOpacityText.Text = $"{Math.Round(_floatingConfig.Opacity * 100):0}%";
+            foreach (var child in FloatItemsPanel.Children)
+            {
+                if (child is CheckBox box && box.Tag is string id)
+                    box.IsChecked = _floatingConfig.Items.Contains(id);
+            }
+        }
+        finally
+        {
+            _floatingSyncing = previous;
+        }
+    }
+
+    private void FloatEnabled_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_floatingSyncing) return;
+        SetFloating(FloatEnabledSwitch.IsOn);
+    }
+
+    private void FloatOpacity_Changed(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (_floatingSyncing) return;
+        _floatingConfig.Opacity = Math.Clamp(e.NewValue / 100.0, 0.2, 1.0);
+        if (FloatOpacityText is not null) FloatOpacityText.Text = $"{e.NewValue:0}%";
+        _floating?.SetOpacity(_floatingConfig.Opacity);
+        SaveFloatingSoon();
+    }
+
+    private void FloatItem_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_floatingSyncing) return;
+        if (sender is not CheckBox box || box.Tag is not string id) return;
+        if (box.IsChecked == true) _floatingConfig.Items.Add(id);
+        else _floatingConfig.Items.Remove(id);
+        // 至少保留状态行，避免悬浮窗变成空窗口。
+        if (_floatingConfig.Items.Count == 0) _floatingConfig.Items.Add("status");
+        _floating?.Rebuild();
+        SyncFloatingControls();
+        SaveFloatingSoon();
+    }
+
+    private void SaveFloatingSoon()
+    {
+        if (!_connected || _floatingSyncing) return;
+        _floatingSaveTimer ??= DispatcherQueue.CreateTimer();
+        _floatingSaveTimer.Interval = TimeSpan.FromMilliseconds(250);
+        _floatingSaveTimer.IsRepeating = false;
+        _floatingSaveTimer.Tick -= FlushFloatingSave;
+        _floatingSaveTimer.Tick += FlushFloatingSave;
+        _floatingSaveTimer.Start();
+    }
+
+    private async void FlushFloatingSave(DispatcherQueueTimer sender, object args)
+        => await SaveFloatingAsync();
+
+    private async Task SaveFloatingAsync()
+    {
+        if (!_connected) return;
+        var items = new JsonArray();
+        foreach (var id in FloatingConfig.AllItems)
+            if (_floatingConfig.Items.Contains(id))
+                items.Add(JsonValue.Create(id));
+        try
+        {
+            await _client.CallAsync("settings_set", new JsonObject
+            {
+                ["floating"] = new JsonObject
+                {
+                    ["enabled"] = _floatingConfig.Enabled,
+                    ["opacity"] = Math.Round(_floatingConfig.Opacity, 2),
+                    ["items"] = items,
+                    ["x"] = _floatingConfig.X,
+                    ["y"] = _floatingConfig.Y,
+                },
+            }, 10000);
+        }
+        catch
+        {
+            // 保存失败不影响当前会话，下次改动会再试。
+        }
+    }
+
+    private void UpdateFloatingData(JsonElement status)
+    {
+        if (_floating is null || !_floating.AppWindow.IsVisible) return;
+        double cpu = 0, gpu = -1, ram = 0;
+        if (status.TryGetProperty("system", out var system) && system.ValueKind == JsonValueKind.Object)
+        {
+            cpu = Num(system, "cpu", 0);
+            gpu = Num(system, "gpu", -1);
+            ram = Num(system, "ram", 0);
+        }
+        _floating.Update(Bool(status, "running"), Bool(status, "loading"),
+            Num(status, "inputDb", -90), Num(status, "outputDb", -90),
+            Str(status, "aiMode"), Num(status, "latencyMs", 0), cpu, gpu, ram);
     }
 
     // ------------------------------------------------------------------

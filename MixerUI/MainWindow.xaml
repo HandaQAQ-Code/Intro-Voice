@@ -1720,6 +1720,33 @@
 
                         <Border Style="{StaticResource CardStyle}">
                             <StackPanel Spacing="10">
+                                <TextBlock Text="悬浮窗与后台驻留" Style="{StaticResource SectionTitle}" />
+                                <TextBlock Style="{StaticResource HintText}" TextWrapping="Wrap"
+                                           Text="打开后桌面出现一个置顶小窗：拖动顶部标题区可移动，可调透明度，只显示你勾选的数据。关闭主窗口时程序不退出，继续在系统托盘运行。" />
+                                <ToggleSwitch x:Name="FloatEnabledSwitch" Header="显示悬浮窗"
+                                              Toggled="FloatEnabled_Toggled" />
+                                <Grid ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="透明度" Style="{StaticResource MetricLabel}" />
+                                    <Slider x:Name="FloatOpacitySlider" Grid.Column="1"
+                                            Minimum="20" Maximum="100" StepFrequency="1"
+                                            ValueChanged="FloatOpacity_Changed" />
+                                    <TextBlock x:Name="FloatOpacityText" Grid.Column="2" Text="92%"
+                                               Style="{StaticResource ValueText}" TextAlignment="Right" />
+                                </Grid>
+                                <TextBlock Text="悬浮窗显示的数据" Style="{StaticResource MetricLabel}" />
+                                <StackPanel x:Name="FloatItemsPanel" Spacing="2" />
+                                <TextBlock Style="{StaticResource HintText}" TextWrapping="Wrap"
+                                           Text="关掉主窗口后会驻留到托盘：双击托盘图标恢复窗口，右键菜单可显示悬浮窗、启动 / 停止链路或退出。" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel Spacing="10">
                                 <TextBlock Text="Python 环境" Style="{StaticResource SectionTitle}" />
                                 <TextBlock Style="{StaticResource HintText}" TextWrapping="Wrap"
                                            Text="GPU 档需要 CUDA 版 PyTorch。程序会自动搜索本机所有 Python，找到装好 CUDA torch 的就直接复用，不需要下载；也可以在这里手动指定解释器路径。" />

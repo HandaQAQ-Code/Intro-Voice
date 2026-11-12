@@ -1132,6 +1132,10 @@ class Service:
                     "gainDb": 0.0, "floorDb": -55.0, "srStrength": 0.7, "latencyMode": "balanced",
                     "pythonPath": "", "checkUpdates": True, "tutorialSeen": False,
                     "theme": "system",
+                    # 悬浮窗：是否显示、透明度、显示哪些数据、上次位置（-1 = 自动放右上角）
+                    "floating": {"enabled": False, "opacity": 0.92,
+                                 "items": ["status", "ai", "input", "output", "cpu", "gpu", "ram"],
+                                 "x": -1, "y": -1},
                     "dsp": dsp_default_params(),
                     "workshop": {"order": [], "enabled": {}, "params": {}},
                     "mobileMic": {"gainDb": 0.0, "hpfHz": 80.0, "gateDb": -62.0,
@@ -1746,6 +1750,25 @@ class Service:
                     raise RuntimeError("该设备没有播放通道，不能作为输出")
             self.settings["outputDevice"] = dev_id
             self.settings["output"] = device_label(dev_id) if dev_id >= 0 else ""
+            changed = True
+        if "floating" in request and isinstance(request["floating"], dict):
+            incoming = request["floating"]
+            current = dict(self.settings.get("floating") or {})
+            if "enabled" in incoming:
+                current["enabled"] = bool(incoming["enabled"])
+            if "opacity" in incoming:
+                current["opacity"] = max(0.2, min(1.0, float(incoming["opacity"])))
+            if "x" in incoming:
+                current["x"] = int(incoming["x"])
+            if "y" in incoming:
+                current["y"] = int(incoming["y"])
+            if "items" in incoming and isinstance(incoming["items"], list):
+                allowed = ("status", "ai", "input", "output",
+                           "latency", "cpu", "gpu", "ram")
+                picked = [str(x) for x in incoming["items"] if str(x) in allowed]
+                # 一个都不剩时保留状态行，避免悬浮窗变空白。
+                current["items"] = picked or ["status"]
+            self.settings["floating"] = current
             changed = True
         if "mobilePort" in request:
             port = int(request["mobilePort"])
