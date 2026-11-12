@@ -32,15 +32,28 @@ TREE = "https://gitee.com/handa2500/intro-voice-plugin-market/tree/main/plugins"
 # 可复用的代码片段（插件脚本里不能 import，只能依赖 np / 内置小工具）
 # ---------------------------------------------------------------------------
 FILTERS = '''
+_LP_HIST = {}
+
+
 def _lowpass(x, sr, hz):
     hz = max(20.0, min(sr * 0.45, hz))
     a = np.exp(-2.0 * np.pi * hz / sr)
-    taps = int(min(256, max(8, sr / hz * 2), len(x)))
+    taps = int(min(256, max(8, sr / hz * 2)))
     k = (1.0 - a) * np.power(a, np.arange(taps))
     k = k / np.sum(k)
+    ch = x.shape[1]
+    key = round(hz, 1)
+    if len(_LP_HIST) > 32:
+        _LP_HIST.clear()
+    state = _LP_HIST.get(key)
+    if state is None or state.shape[1] != ch:
+        state = np.zeros((taps - 1, ch), np.float32)
+    # 带着上一块的尾巴一起卷积：块边界不会重新起振，否则每 40 ms 一次爆音。
+    padded = np.vstack([state, x])
     out = np.empty_like(x)
-    for c in range(x.shape[1]):
-        out[:, c] = np.convolve(x[:, c], k, mode="same")
+    for c in range(ch):
+        out[:, c] = np.convolve(padded[:, c], k, mode="valid")[:len(x)]
+    _LP_HIST[key] = padded[-(taps - 1):]
     return out
 
 
@@ -75,7 +88,8 @@ def _shift(x, sr, semi, mix=1.0):
     phase = (_PPH + pos * (1.0 - ratio)) % _GRAIN
     d1 = phase
     d2 = (phase + _GRAIN * 0.5) % _GRAIN
-    w1 = np.square(np.cos(np.pi * d1 / _GRAIN))
+    # 权重必须在读头回绕处为 0，否则每颗粒一次「跳回现在」会变成明显爆音（听感就是一卡一卡）。
+    w1 = np.square(np.sin(np.pi * d1 / _GRAIN))
     w2 = 1.0 - w1
 
     def read(delay):
@@ -92,26 +106,26 @@ def _shift(x, sr, semi, mix=1.0):
 
 DELAY = '''
 _SIZE = 1 << 18
-_DBUF = None
-_DW = 0
+_DLINES = {}
 
 
-def _delay(x, sr, ms, feedback, mix, spread=0.0):
-    global _DBUF, _DW
+def _delay(x, sr, ms, feedback, mix, spread=0.0, slot="a"):
+    # 每条延迟线独立 slot：一个插件里串联两条 delay 时不会互相踩缓冲区。
     n, ch = x.shape
-    if _DBUF is None or _DBUF.shape[1] != ch:
-        _DBUF = np.zeros((_SIZE, ch), np.float32)
-        _DW = 0
+    line = _DLINES.get(slot)
+    if line is None or line[0].shape[1] != ch:
+        line = (np.zeros((_SIZE, ch), np.float32), 0)
+    buf, w = line
     out = np.empty_like(x)
-    frame = (_DW + np.arange(n)) % _SIZE
+    frame = (w + np.arange(n)) % _SIZE
     for c in range(ch):
         d = int(sr * (ms + (spread if c else 0.0)) / 1000.0)
         d = max(1, min(_SIZE - n - 1, d))
         at = (frame - d) % _SIZE
-        wet = _DBUF[at, c].copy()
-        _DBUF[frame, c] = x[:, c] + wet * feedback
+        wet = buf[at, c].copy()
+        buf[frame, c] = x[:, c] + wet * feedback
         out[:, c] = x[:, c] * (1.0 - mix) + wet * mix
-    _DW = (_DW + n) % _SIZE
+    _DLINES[slot] = (buf, (w + n) % _SIZE)
     return out.astype(np.float32)
 '''
 
@@ -143,32 +157,60 @@ def _mod_delay(x, sr, base_ms, depth_ms, rate_hz, mix, fb=0.0):
 '''
 
 CRUSH = '''
+_CRUSH_CNT = 0
+_CRUSH_HELD = None
+
+
 def _crush(x, bits, hold):
+    # 采样保持要跨块连续：每块重新分相会在块边界产生规律性爆音。
+    global _CRUSH_CNT, _CRUSH_HELD
     levels = float(2 ** int(bits))
-    held = np.repeat(x[::hold], hold, axis=0)[:len(x)]
-    return np.round(held * levels) / levels
+    hold = max(1, int(hold))
+    ch = x.shape[1]
+    if _CRUSH_HELD is None or _CRUSH_HELD.shape[0] != ch:
+        _CRUSH_HELD = np.zeros(ch, np.float32)
+        _CRUSH_CNT = 0
+    out = np.empty_like(x)
+    held = _CRUSH_HELD
+    cnt = _CRUSH_CNT
+    for i in range(len(x)):
+        if cnt == 0:
+            held = x[i].copy()
+        out[i] = held
+        cnt += 1
+        if cnt >= hold:
+            cnt = 0
+    _CRUSH_HELD = held
+    _CRUSH_CNT = cnt
+    return np.round(out * levels) / levels
 '''
 
 RING = '''
 def _ring(x, sr, hz, depth, phase=[0.0]):
+    # 相位按整秒回绕：hz 为整数时 cos(2π·hz·(t+1)) 与回绕前完全一致，不会爆音。
     n = len(x)
     t = (np.arange(n, dtype=np.float64) + phase[0]) / sr
     mod = np.cos(2.0 * np.pi * hz * t)[:, None]
-    phase[0] = (phase[0] + n) % (sr / max(hz, 1.0))
+    phase[0] = (phase[0] + n) % sr
     return x * (1.0 - depth + depth * mod)
 '''
 
 SUB = '''
+_SUBPH = 0.0
+_SUBENV = 0.0
+
+
 def _sub(x, sr, hz):
+    # 正弦相位跨块连续、包络按块线性过渡，否则每块边界都会“咔”一下。
+    global _SUBPH, _SUBENV
     n, ch = x.shape
-    t = np.arange(n, dtype=np.float64) / sr
-    env = np.mean(np.abs(x), axis=1)
-    a = np.exp(-2.0 * np.pi * 12.0 / sr)
-    taps = 256
-    k = (1.0 - a) * np.power(a, np.arange(taps))
-    env = np.convolve(env, k / np.sum(k), mode="same")[:, None]
+    target = float(np.mean(np.abs(x)))
+    env = _SUBENV + (target - _SUBENV) * (np.arange(1, n + 1, dtype=np.float32) / n)
+    _SUBENV = target
+    t = (_SUBPH + np.arange(n, dtype=np.float64)) / sr
     tone = np.sin(2.0 * np.pi * hz * t)[:, None]
-    return (tone * env).astype(np.float32)
+    _SUBPH = float((_SUBPH + n) % sr)
+    return (tone * env[:, None]).astype(np.float32)
 '''
 
 
@@ -352,8 +394,9 @@ def process(x, sr, params):
 '''),
     plugin("underwater", "水下发闷", "低通 + 缓慢摆动，像在水里说话。",
            "重低通配合 0.5 Hz 的摆动，营造水下咕噜咕噜的对话感。",
-           FILTERS + '''
+           '''
 _PH = 0.0
+_UW_STATE = None
 
 PARAMS = [
     {"id": "cutoff", "name": "低通", "min": 300.0, "max": 1500.0, "default": 700.0, "step": 20.0, "unit": "Hz"},
@@ -363,19 +406,22 @@ PARAMS = [
 
 
 def process(x, sr, params):
-    global _PH
-    n = len(x)
+    # 截止频率逐样本变化：用一极点滤波并保留状态，避免分段 FIR 在段边界爆音。
+    global _PH, _UW_STATE
+    n, ch = x.shape
     t = (np.arange(n, dtype=np.float64) + _PH) / sr
     wobble = 1.0 + 0.35 * params["wobble"] * np.sin(2.0 * np.pi * params["speed"] * t)
     cutoff = np.clip(params["cutoff"] * wobble, 80.0, 3000.0)
+    coef = np.exp(-2.0 * np.pi * cutoff / sr)
+    if _UW_STATE is None or _UW_STATE.shape[0] != ch:
+        _UW_STATE = np.zeros(ch, np.float32)
+    state = _UW_STATE
     y = np.empty_like(x)
-    block = 256
-    for start in range(0, n, block):
-        seg = x[start:start + block]
-        if not len(seg):
-            break
-        hz = float(cutoff[start])
-        y[start:start + block] = _lowpass(seg, sr, hz)
+    for i in range(n):
+        a = coef[i]
+        state = a * state + (1.0 - a) * x[i]
+        y[i] = state
+    _UW_STATE = state
     _PH = float((_PH + n) % (sr * 8))
     return y.astype(np.float32)
 '''),
@@ -390,8 +436,8 @@ PARAMS = [
 
 
 def process(x, sr, params):
-    a = _delay(x, sr, params["time"], params["feedback"], params["mix"])
-    b = _delay(x, sr, params["time"] * 1.7, params["feedback"] * 0.7, params["mix"] * 0.6)
+    a = _delay(x, sr, params["time"], params["feedback"], params["mix"], slot="a")
+    b = _delay(x, sr, params["time"] * 1.7, params["feedback"] * 0.7, params["mix"] * 0.6, slot="b")
     return np.clip((a + b) * 0.6, -1.2, 1.2).astype(np.float32)
 '''),
     plugin("stadium", "体育场广播", "中频突出 + 混响，场馆播报感。",
@@ -408,8 +454,8 @@ def process(x, sr, params):
     y = _bandpass(x, sr, 180.0, 6500.0)
     y = y + _bandpass(y, sr, 1200.0, 3200.0) * params["presence"]
     y = np.tanh(y * params["drive"]) / np.tanh(params["drive"])
-    wet = _delay(y, sr, 55.0, 0.55, params["verb"] * 0.5)
-    wet = _delay(wet, sr, 130.0, 0.45, params["verb"] * 0.35)
+    wet = _delay(y, sr, 55.0, 0.55, params["verb"] * 0.5, slot="a")
+    wet = _delay(wet, sr, 130.0, 0.45, params["verb"] * 0.35, slot="b")
     return np.clip(y * (1.0 - params["verb"] * 0.4) + wet, -1.2, 1.2).astype(np.float32)
 '''),
     # ---------------- 鬼畜 / 卡通 ----------------
@@ -660,8 +706,8 @@ PARAMS = [
 
 def process(x, sr, params):
     base = 28.0 + 70.0 * params["size"]
-    wet = _delay(x, sr, base, 0.45 - 0.2 * params["damping"], 1.0)
-    wet = _delay(wet, sr, base * 1.6, 0.4 - 0.2 * params["damping"], 1.0)
+    wet = _delay(x, sr, base, 0.45 - 0.2 * params["damping"], 1.0, slot="a")
+    wet = _delay(wet, sr, base * 1.6, 0.4 - 0.2 * params["damping"], 1.0, slot="b")
     wet = _lowpass(wet, sr, 9000.0 - 5000.0 * params["damping"])
     return np.clip(x * (1.0 - params["mix"]) + wet * params["mix"], -1.2, 1.2).astype(np.float32)
 '''),

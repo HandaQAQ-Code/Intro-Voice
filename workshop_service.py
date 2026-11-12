@@ -35,6 +35,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -179,8 +180,19 @@ class Compiled:
         self.error = error
 
 
+# 编译缓存：每次列插件/换开关都 exec 一遍脚本会长时间占着 GIL，
+# 音频线程因此掉块（听起来就是一卡一卡）。按代码指纹缓存，未改动的直接复用。
+_compile_cache: dict[str, tuple[str, Compiled]] = {}
+
+
 def compile_manifest(manifest: dict) -> Compiled:
     slug = str(manifest.get("slug") or "plugin")
+    code_text = str(manifest.get("code") or "")
+    fingerprint = hashlib.sha1(
+        f"{slug}\x00{manifest.get('schema')}\x00{code_text}".encode("utf-8")).hexdigest()
+    cached = _compile_cache.get(slug)
+    if cached and cached[0] == fingerprint:
+        return cached[1]
     try:
         checked = _validate(manifest)
         namespace = {
@@ -196,10 +208,13 @@ def compile_manifest(manifest: dict) -> Compiled:
         compiled = Compiled(slug, checked)
         compiled.fn = fn
         compiled.params = _param_defs(namespace.get("PARAMS"))
+        _compile_cache[slug] = (fingerprint, compiled)
         return compiled
     except Exception as exc:  # noqa: BLE001 - 用户代码，任何异常都要落到界面
         message = f"{type(exc).__name__}: {exc}"
-        return Compiled(slug, manifest, message)
+        failed = Compiled(slug, manifest, message)
+        _compile_cache[slug] = (fingerprint, failed)
+        return failed
 
 
 def _source_check(code: str) -> str:
