@@ -49,9 +49,12 @@ from pathlib import Path
 import numpy as np
 
 WORKSHOP_VERSION = 1
-MARKET_REPO = "HandaQAQ-Code/Intro-Voice-Plugin-Market"
-MARKET_SSH = f"git@github.com:{MARKET_REPO}.git"
-MARKET_RAW = f"https://raw.githubusercontent.com/{MARKET_REPO}/main"
+# 市场仓库以 Gitee 为国内主源（发布也推到这里）。
+GITEE_OWNER = "handa2500"
+MARKET_REPO = f"{GITEE_OWNER}/intro-voice-plugin-market"
+MARKET_WEB = f"https://gitee.com/{MARKET_REPO}"
+MARKET_SSH = f"git@gitee.com:{MARKET_REPO}.git"
+MARKET_RAW = f"{MARKET_WEB}/raw/main"
 MAX_CODE_BYTES = 96 * 1024
 MAX_PLUGINS = 32
 TEST_RATE = 48000
@@ -490,7 +493,7 @@ def _market_entry(manifest: dict) -> dict:
         "copyright": f"© {manifest.get('author') or '匿名'} · {manifest.get('license') or 'MIT'}",
         "type": "workshop",
         "summary": manifest.get("description") or "",
-        "homepage": f"https://github.com/{MARKET_REPO}/tree/main/plugins/{manifest['slug']}",
+        "homepage": f"{MARKET_WEB}/tree/main/plugins/{manifest['slug']}",
         "manifest": f"{MARKET_RAW}/plugins/{manifest['slug']}/plugin.json",
         "sizeMb": round(len(json.dumps(manifest, ensure_ascii=False)) / 1024, 1),
     }
@@ -509,7 +512,7 @@ def publish(root: Path, slug: str, message: str = "") -> dict:
             raise RuntimeError("市场仓库克隆失败，请检查网络与 SSH 权限")
         top = Path(_git(["rev-parse", "--show-toplevel"], cwd=repo)).resolve()
         origin = _git(["remote", "get-url", "origin"], cwd=repo)
-        if top != repo.resolve() or "Intro-Voice-Plugin-Market" not in origin:
+        if top != repo.resolve() or "plugin-market" not in origin.lower():
             shutil.rmtree(repo, ignore_errors=True)
             raise RuntimeError(f"市场仓库定位异常（{origin} → {top}），已中止，未做任何提交")
     else:
@@ -572,6 +575,6 @@ def publish(root: Path, slug: str, message: str = "") -> dict:
         "commit": commit,
         "changed": bool(status),
         "repo": MARKET_REPO,
-        "url": f"https://github.com/{MARKET_REPO}/tree/main/plugins/{manifest['slug']}",
+        "url": f"{MARKET_WEB}/tree/main/plugins/{manifest['slug']}",
         "catalog": f"{MARKET_RAW}/catalog.json",
     }

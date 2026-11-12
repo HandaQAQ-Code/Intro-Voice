@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "slug": "de-esser",
+  "name": "齿音抑制",
+  "author": "Intro Voice",
+  "version": "1.0.0",
+  "license": "MIT",
+  "description": "检测高频能量并按比例衰减，专门处理 s / sh 的刺耳齿音。",
+  "code": "def _lowpass(x, sr, hz):\n    hz = max(20.0, min(sr * 0.45, hz))\n    a = np.exp(-2.0 * np.pi * hz / sr)\n    taps = int(min(256, max(8, sr / hz * 2), len(x)))\n    k = (1.0 - a) * np.power(a, np.arange(taps))\n    k = k / np.sum(k)\n    out = np.empty_like(x)\n    for c in range(x.shape[1]):\n        out[:, c] = np.convolve(x[:, c], k, mode=\"same\")\n    return out\n\n\ndef _highpass(x, sr, hz):\n    return x - _lowpass(x, sr, hz)\n\n\ndef _bandpass(x, sr, lo, hi):\n    return _highpass(_lowpass(x, sr, hi), sr, lo)\n\nPARAMS = [\n    {\"id\": \"freq\", \"name\": \"中心\", \"min\": 4000.0, \"max\": 9000.0, \"default\": 6500.0, \"step\": 100.0, \"unit\": \"Hz\"},\n    {\"id\": \"amount\", \"name\": \"抑制量\", \"min\": 0.0, \"max\": 1.0, \"default\": 0.5, \"step\": 0.01},\n]\n\n\ndef process(x, sr, params):\n    band = _bandpass(x, sr, params[\"freq\"] * 0.75, min(sr * 0.45, params[\"freq\"] * 1.5))\n    level = np.sqrt(np.mean(np.square(band)) + 1e-12)\n    gain = 1.0\n    if level > 0.02:\n        gain = max(0.15, 0.02 / level) ** params[\"amount\"]\n    return np.clip(x - band * (1.0 - gain), -1.2, 1.2).astype(np.float32)\n",
+  "updatedAt": "2026-11-12 00:30:00"
+}

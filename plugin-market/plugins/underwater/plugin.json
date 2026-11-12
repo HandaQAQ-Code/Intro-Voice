@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "slug": "underwater",
+  "name": "水下发闷",
+  "author": "Intro Voice",
+  "version": "1.0.0",
+  "license": "MIT",
+  "description": "重低通配合 0.5 Hz 的摆动，营造水下咕噜咕噜的对话感。",
+  "code": "def _lowpass(x, sr, hz):\n    hz = max(20.0, min(sr * 0.45, hz))\n    a = np.exp(-2.0 * np.pi * hz / sr)\n    taps = int(min(256, max(8, sr / hz * 2), len(x)))\n    k = (1.0 - a) * np.power(a, np.arange(taps))\n    k = k / np.sum(k)\n    out = np.empty_like(x)\n    for c in range(x.shape[1]):\n        out[:, c] = np.convolve(x[:, c], k, mode=\"same\")\n    return out\n\n\ndef _highpass(x, sr, hz):\n    return x - _lowpass(x, sr, hz)\n\n\ndef _bandpass(x, sr, lo, hi):\n    return _highpass(_lowpass(x, sr, hi), sr, lo)\n\n_PH = 0.0\n\nPARAMS = [\n    {\"id\": \"cutoff\", \"name\": \"低通\", \"min\": 300.0, \"max\": 1500.0, \"default\": 700.0, \"step\": 20.0, \"unit\": \"Hz\"},\n    {\"id\": \"wobble\", \"name\": \"摆动\", \"min\": 0.0, \"max\": 1.0, \"default\": 0.5, \"step\": 0.01},\n    {\"id\": \"speed\", \"name\": \"摆动速度\", \"min\": 0.1, \"max\": 2.0, \"default\": 0.45, \"step\": 0.05, \"unit\": \"Hz\"},\n]\n\n\ndef process(x, sr, params):\n    global _PH\n    n = len(x)\n    t = (np.arange(n, dtype=np.float64) + _PH) / sr\n    wobble = 1.0 + 0.35 * params[\"wobble\"] * np.sin(2.0 * np.pi * params[\"speed\"] * t)\n    cutoff = np.clip(params[\"cutoff\"] * wobble, 80.0, 3000.0)\n    y = np.empty_like(x)\n    block = 256\n    for start in range(0, n, block):\n        seg = x[start:start + block]\n        if not len(seg):\n            break\n        hz = float(cutoff[start])\n        y[start:start + block] = _lowpass(seg, sr, hz)\n    _PH = float((_PH + n) % (sr * 8))\n    return y.astype(np.float32)\n",
+  "updatedAt": "2026-11-12 00:30:00"
+}

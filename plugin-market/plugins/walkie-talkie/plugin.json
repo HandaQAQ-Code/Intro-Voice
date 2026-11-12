@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "slug": "walkie-talkie",
+  "name": "对讲机",
+  "author": "Intro Voice",
+  "version": "1.0.0",
+  "license": "MIT",
+  "description": "极窄频带与硬压缩模拟对讲机，配一点底噪，适合「收到请回答」式整活。",
+  "code": "def _lowpass(x, sr, hz):\n    hz = max(20.0, min(sr * 0.45, hz))\n    a = np.exp(-2.0 * np.pi * hz / sr)\n    taps = int(min(256, max(8, sr / hz * 2), len(x)))\n    k = (1.0 - a) * np.power(a, np.arange(taps))\n    k = k / np.sum(k)\n    out = np.empty_like(x)\n    for c in range(x.shape[1]):\n        out[:, c] = np.convolve(x[:, c], k, mode=\"same\")\n    return out\n\n\ndef _highpass(x, sr, hz):\n    return x - _lowpass(x, sr, hz)\n\n\ndef _bandpass(x, sr, lo, hi):\n    return _highpass(_lowpass(x, sr, hi), sr, lo)\n\nPARAMS = [\n    {\"id\": \"lo\", \"name\": \"低切\", \"min\": 300.0, \"max\": 900.0, \"default\": 500.0, \"step\": 10.0, \"unit\": \"Hz\"},\n    {\"id\": \"hi\", \"name\": \"高切\", \"min\": 1800.0, \"max\": 3500.0, \"default\": 2500.0, \"step\": 50.0, \"unit\": \"Hz\"},\n    {\"id\": \"drive\", \"name\": \"过载\", \"min\": 1.0, \"max\": 4.0, \"default\": 2.2, \"step\": 0.1},\n    {\"id\": \"noise\", \"name\": \"底噪\", \"min\": 0.0, \"max\": 0.03, \"default\": 0.008, \"step\": 0.001},\n]\n\n\ndef process(x, sr, params):\n    y = _bandpass(x, sr, params[\"lo\"], params[\"hi\"])\n    y = np.tanh(y * params[\"drive\"]) / np.tanh(params[\"drive\"])\n    level = np.sqrt(np.mean(np.square(y)) + 1e-9)\n    if level > 0.02:\n        y = y * (0.14 / level) * 0.55\n    y = y + (np.random.rand(*y.shape).astype(np.float32) - 0.5) * params[\"noise\"]\n    return np.clip(y, -1.0, 1.0).astype(np.float32)\n",
+  "updatedAt": "2026-11-12 00:30:00"
+}

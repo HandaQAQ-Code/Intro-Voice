@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "slug": "chorus-wide",
+  "name": "合唱叠音",
+  "author": "Intro Voice",
+  "version": "1.0.0",
+  "license": "MIT",
+  "description": "12–30 ms 的缓慢调制延迟叠在干声上，做出合唱与加宽效果。",
+  "code": "_SIZE = 1 << 17\n_MBUF = None\n_MW = 0\n_MPH = 0.0\n\n\ndef _mod_delay(x, sr, base_ms, depth_ms, rate_hz, mix, fb=0.0):\n    global _MBUF, _MW, _MPH\n    n, ch = x.shape\n    if _MBUF is None or _MBUF.shape[1] != ch:\n        _MBUF = np.zeros((_SIZE, ch), np.float32)\n        _MW = 0\n        _MPH = 0.0\n    frame = (_MW + np.arange(n)) % _SIZE\n    _MBUF[frame] = x\n    t = (_MPH + np.arange(n, dtype=np.float64)) / sr\n    sweep = base_ms + depth_ms * np.sin(2.0 * np.pi * rate_hz * t)\n    at = (_MW + np.arange(n) - sweep * sr / 1000.0) % _SIZE\n    i0 = np.floor(at).astype(np.int64)\n    frac = (at - i0)[:, None]\n    wet = _MBUF[i0] * (1.0 - frac) + _MBUF[(i0 + 1) % _SIZE] * frac\n    _MW = (_MW + n) % _SIZE\n    _MPH = float((_MPH + n) % (sr * 30))\n    return (x * (1.0 - mix) + wet * mix).astype(np.float32)\n\nPARAMS = [\n    {\"id\": \"rate\", \"name\": \"速率\", \"min\": 0.1, \"max\": 2.0, \"default\": 0.6, \"step\": 0.01, \"unit\": \"Hz\"},\n    {\"id\": \"depth\", \"name\": \"厚度\", \"min\": 0.0, \"max\": 1.0, \"default\": 0.5, \"step\": 0.01},\n    {\"id\": \"mix\", \"name\": \"混合\", \"min\": 0.0, \"max\": 1.0, \"default\": 0.5, \"step\": 0.01},\n]\n\n\ndef process(x, sr, params):\n    wet = _mod_delay(x, sr, 16.0, 6.0 + 8.0 * params[\"depth\"],\n                     params[\"rate\"], params[\"mix\"])\n    return np.clip(wet, -1.2, 1.2).astype(np.float32)\n",
+  "updatedAt": "2026-11-12 00:30:00"
+}

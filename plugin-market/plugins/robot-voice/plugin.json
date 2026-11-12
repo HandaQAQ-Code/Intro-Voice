@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "slug": "robot-voice",
+  "name": "机器人",
+  "author": "Intro Voice",
+  "version": "1.0.0",
+  "license": "MIT",
+  "description": "用深度环形调制与短梳状延迟做出金属机器人声线，适合整活与旁白。",
+  "code": "def _ring(x, sr, hz, depth, phase=[0.0]):\n    n = len(x)\n    t = (np.arange(n, dtype=np.float64) + phase[0]) / sr\n    mod = np.cos(2.0 * np.pi * hz * t)[:, None]\n    phase[0] = (phase[0] + n) % (sr / max(hz, 1.0))\n    return x * (1.0 - depth + depth * mod)\n\ndef _lowpass(x, sr, hz):\n    hz = max(20.0, min(sr * 0.45, hz))\n    a = np.exp(-2.0 * np.pi * hz / sr)\n    taps = int(min(256, max(8, sr / hz * 2), len(x)))\n    k = (1.0 - a) * np.power(a, np.arange(taps))\n    k = k / np.sum(k)\n    out = np.empty_like(x)\n    for c in range(x.shape[1]):\n        out[:, c] = np.convolve(x[:, c], k, mode=\"same\")\n    return out\n\n\ndef _highpass(x, sr, hz):\n    return x - _lowpass(x, sr, hz)\n\n\ndef _bandpass(x, sr, lo, hi):\n    return _highpass(_lowpass(x, sr, hi), sr, lo)\n\n_RBUF = None\n_RW = 0\n\nPARAMS = [\n    {\"id\": \"ring\", \"name\": \"环调频率\", \"min\": 40.0, \"max\": 300.0, \"default\": 90.0, \"step\": 5.0, \"unit\": \"Hz\"},\n    {\"id\": \"depth\", \"name\": \"调制深度\", \"min\": 0.0, \"max\": 1.0, \"default\": 0.8, \"step\": 0.01},\n    {\"id\": \"drive\", \"name\": \"硬度\", \"min\": 1.0, \"max\": 4.0, \"default\": 1.6, \"step\": 0.1},\n]\n\n\ndef process(x, sr, params):\n    global _RBUF, _RW\n    n, ch = x.shape\n    size = max(4096, int(sr * 0.12))\n    if _RBUF is None or _RBUF.shape[0] != size or _RBUF.shape[1] != ch:\n        _RBUF = np.zeros((size, ch), np.float32)\n        _RW = 0\n    ring = _ring(x, sr, params[\"ring\"], params[\"depth\"])\n    comb_ms = 1000.0 / max(params[\"ring\"], 20.0)\n    d = max(1, min(size - n - 1, int(sr * comb_ms / 2000.0)))\n    at = (_RW + np.arange(n) - d) % size\n    dry = _RBUF[at].copy()\n    widx = (_RW + np.arange(n)) % size\n    _RBUF[widx] = ring + dry * 0.55\n    _RW = (_RW + n) % size\n    y = ring + dry * 0.5\n    y = np.tanh(y * params[\"drive\"]) / np.tanh(params[\"drive\"])\n    return np.clip(y, -1.0, 1.0).astype(np.float32)\n",
+  "updatedAt": "2026-11-12 00:30:00"
+}

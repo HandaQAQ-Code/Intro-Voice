@@ -22,10 +22,18 @@ import zipfile
 from pathlib import Path
 
 APP_VERSION = "1.0.0"
+# 主源放在国内（Gitee），海外/备用源仍走 GitHub；目录下载按顺序逐个尝试。
+GITEE_OWNER = "handa2500"
 REPO = "HandaQAQ-Code/Intro-Voice"
-MARKET_REPO = "HandaQAQ-Code/Intro-Voice-Plugin-Market"
-CATALOG_URL = f"https://raw.githubusercontent.com/{MARKET_REPO}/main/catalog.json"
+MARKET_REPO = f"{GITEE_OWNER}/intro-voice-plugin-market"
+MARKET_REPO_GITHUB = "HandaQAQ-Code/Intro-Voice-Plugin-Market"
+CATALOG_URLS = (
+    f"https://gitee.com/{MARKET_REPO}/raw/main/catalog.json",
+    f"https://raw.githubusercontent.com/{MARKET_REPO_GITHUB}/main/catalog.json",
+)
+CATALOG_URL = CATALOG_URLS[0]
 RELEASES_API = f"https://api.github.com/repos/{REPO}/releases/latest"
+RELEASES_API_GITEE = f"https://gitee.com/api/v5/repos/{GITEE_OWNER}/intro-voice/releases/latest"
 MAX_DOWNLOAD_MB = 800
 USER_AGENT = f"RecordOutMixer/{APP_VERSION}"
 
@@ -122,43 +130,47 @@ def fetch_catalog(root: Path, url: str | None = None, force: bool = False) -> di
     except (OSError, ValueError):
         cached = {}
 
-    target = url or CATALOG_URL
+    candidates = [url] if url else list(CATALOG_URLS)
     if not force and cached.get("fetchedAt") and time.time() - float(cached["fetchedAt"]) < 600:
         return {**cached, "cached": True}
 
-    try:
-        raw, headers = _get(target, timeout=8.0)
-        payload = json.loads(raw.decode("utf-8"))
-        entries = [e for e in (_validate_entry(i) for i in payload.get("plugins") or []) if e]
-        result = {
-            "source": target,
-            "fetchedAt": time.time(),
-            "updatedAt": str(payload.get("updatedAt") or ""),
-            "plugins": entries,
-            "cached": False,
-        }
+    error: Exception | None = None
+    for target in candidates:
         try:
-            paths["catalog"].parent.mkdir(parents=True, exist_ok=True)
-            paths["catalog"].write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        except OSError:
-            pass
-        return result
-    except Exception as exc:
-        if cached.get("plugins"):
-            return {**cached, "cached": True, "error": f"远程目录不可用，显示上次缓存：{exc}"}
-        for bundled in (root / "plugin-market" / "catalog.json",):
-            if not bundled.is_file():
-                continue
+            raw, headers = _get(target, timeout=8.0)
+            payload = json.loads(raw.decode("utf-8"))
+            entries = [e for e in (_validate_entry(i) for i in payload.get("plugins") or []) if e]
+            result = {
+                "source": target,
+                "fetchedAt": time.time(),
+                "updatedAt": str(payload.get("updatedAt") or ""),
+                "plugins": entries,
+                "cached": False,
+            }
             try:
-                payload = json.loads(bundled.read_text(encoding="utf-8"))
-                entries = [e for e in (_validate_entry(i) for i in payload.get("plugins") or []) if e]
-                if entries:
-                    return {"source": str(bundled), "plugins": entries, "cached": True,
-                            "bundled": True, "error": f"远程目录不可用，已加载随包目录：{exc}"}
-            except (OSError, ValueError):
-                continue
-        return {"source": target, "plugins": [], "cached": False,
-                "error": f"无法获取插件目录：{exc}"}
+                paths["catalog"].parent.mkdir(parents=True, exist_ok=True)
+                paths["catalog"].write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+            return result
+        except Exception as exc:
+            error = exc
+
+    if cached.get("plugins"):
+        return {**cached, "cached": True, "error": f"远程目录不可用，显示上次缓存：{error}"}
+    for bundled in (root / "plugin-market" / "catalog.json",):
+        if not bundled.is_file():
+            continue
+        try:
+            payload = json.loads(bundled.read_text(encoding="utf-8"))
+            entries = [e for e in (_validate_entry(i) for i in payload.get("plugins") or []) if e]
+            if entries:
+                return {"source": str(bundled), "plugins": entries, "cached": True,
+                        "bundled": True, "error": f"远程目录不可用，已加载随包目录：{error}"}
+        except (OSError, ValueError):
+            continue
+    return {"source": candidates[0], "plugins": [], "cached": False,
+            "error": f"无法获取插件目录：{error}"}
 
 
 def installed_map(root: Path) -> dict:
@@ -298,33 +310,59 @@ def _semver(text: str) -> tuple[int, ...]:
     return tuple(int(n) for n in numbers[:3]) or (0,)
 
 
-def check_update(root: Path, use_proxy: str | None = None) -> dict:
-    try:
-        raw, _ = _get(RELEASES_API, timeout=8.0, accept="application/vnd.github+json")
-        payload = json.loads(raw.decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return {"ok": False, "error": "仓库还没有发布版本（Releases 为空）"}
-        return {"ok": False, "error": f"更新服务返回 {exc.code}（可能触发限频）"}
-    except Exception as exc:
-        return {"ok": False, "error": f"检查更新失败：{exc}"}
+def _release_from_github() -> dict:
+    raw, _ = _get(RELEASES_API, timeout=8.0, accept="application/vnd.github+json")
+    payload = json.loads(raw.decode("utf-8"))
+    return {
+        "tag": str(payload.get("tag_name") or ""),
+        "notes": str(payload.get("body") or "")[:4000],
+        "publishedAt": str(payload.get("published_at") or ""),
+        "page": str(payload.get("html_url") or ""),
+        "assets": [{"name": item.get("name"), "size": item.get("size"),
+                    "url": item.get("browser_download_url")} for item in payload.get("assets") or []],
+    }
 
+
+def _release_from_gitee() -> dict:
+    raw, _ = _get(RELEASES_API_GITEE, timeout=8.0)
+    payload = json.loads(raw.decode("utf-8"))
     tag = str(payload.get("tag_name") or "")
-    latest = tag.lstrip("vV")
-    available = _semver(latest) > _semver(APP_VERSION)
-    assets = []
-    for item in payload.get("assets") or []:
-        assets.append({"name": item.get("name"), "size": item.get("size"),
-                       "url": item.get("browser_download_url")})
+    return {
+        "tag": tag,
+        "notes": str(payload.get("body") or "")[:4000],
+        "publishedAt": str(payload.get("created_at") or ""),
+        "page": f"https://gitee.com/{GITEE_OWNER}/intro-voice/releases/tag/{tag}" if tag else "",
+        "assets": [{"name": item.get("name"), "size": item.get("size"),
+                    "url": item.get("browser_download_url")} for item in payload.get("assets") or []],
+    }
+
+
+def check_update(root: Path, use_proxy: str | None = None) -> dict:
+    # GitHub 为主（发布资产完整），失败时自动改走 Gitee 国内源。
+    info = None
+    errors: list[str] = []
+    for fetch in (_release_from_github, _release_from_gitee):
+        try:
+            info = fetch()
+            break
+        except urllib.error.HTTPError as exc:
+            errors.append("仓库还没有发布版本（Releases 为空）" if exc.code == 404
+                          else f"更新服务返回 {exc.code}（可能触发限频）")
+        except Exception as exc:
+            errors.append(f"检查更新失败：{exc}")
+    if info is None:
+        return {"ok": False, "error": "；".join(dict.fromkeys(errors)) or "检查更新失败"}
+
+    latest = info["tag"].lstrip("vV")
     return {
         "ok": True,
         "current": APP_VERSION,
         "latest": latest,
-        "available": available,
-        "notes": str(payload.get("body") or "")[:4000],
-        "publishedAt": str(payload.get("published_at") or ""),
-        "page": str(payload.get("html_url") or ""),
-        "assets": assets,
+        "available": _semver(latest) > _semver(APP_VERSION),
+        "notes": info["notes"],
+        "publishedAt": info["publishedAt"],
+        "page": info["page"],
+        "assets": info["assets"],
     }
 
 

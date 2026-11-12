@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "slug": "glitch-stutter",
+  "name": "卡带鬼畜",
+  "author": "Intro Voice",
+  "version": "1.0.0",
+  "license": "MIT",
+  "description": "按设定间隔反复重放最近一小段音频，做出卡带、鬼畜的重复感。",
+  "code": "_SIZE = 1 << 16\n_GBUF = None\n_GW = 0\n_GPROG = 0\n\nPARAMS = [\n    {\"id\": \"chunk\", \"name\": \"重复长度\", \"min\": 40.0, \"max\": 400.0, \"default\": 140.0, \"step\": 10.0, \"unit\": \"ms\"},\n    {\"id\": \"rate\", \"name\": \"触发频率\", \"min\": 0.0, \"max\": 1.0, \"default\": 0.35, \"step\": 0.01},\n    {\"id\": \"mix\", \"name\": \"混合\", \"min\": 0.0, \"max\": 1.0, \"default\": 0.9, \"step\": 0.01},\n]\n\n\ndef process(x, sr, params):\n    global _GBUF, _GW, _GPROG\n    n, ch = x.shape\n    if _GBUF is None or _GBUF.shape[1] != ch:\n        _GBUF = np.zeros((_SIZE, ch), np.float32)\n        _GW = 0\n        _GPROG = 0\n    idx = (_GW + np.arange(n)) % _SIZE\n    _GBUF[idx] = x\n    chunk = max(64, int(sr * params[\"chunk\"] / 1000.0))\n    repeat_every = max(chunk * 2, int(chunk * (2.5 - params[\"rate\"] * 1.5)))\n    out = x.copy()\n    if _GPROG < chunk:\n        start = (_GW - repeat_every) % _SIZE\n        at = (start + np.arange(n)) % _SIZE\n        out = _GBUF[at].copy() * params[\"mix\"] + x * (1.0 - params[\"mix\"])\n    _GPROG = (_GPROG + n) % repeat_every\n    _GW = (_GW + n) % _SIZE\n    return np.clip(out, -1.2, 1.2).astype(np.float32)\n",
+  "updatedAt": "2026-11-12 00:30:00"
+}

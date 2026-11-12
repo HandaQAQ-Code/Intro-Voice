@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "slug": "noise-gate",
+  "name": "噪声门",
+  "author": "Intro Voice",
+  "version": "1.0.0",
+  "license": "MIT",
+  "description": "按块检测电平，低于门限时快速衰减，适合键盘声/风扇声较大的环境。",
+  "code": "_GAIN = 1.0\n\n\nPARAMS = [\n    {\"id\": \"threshold\", \"name\": \"门限\", \"min\": -70.0, \"max\": -30.0, \"default\": -50.0, \"step\": 1.0, \"unit\": \"dB\"},\n    {\"id\": \"range\", \"name\": \"衰减\", \"min\": 0.0, \"max\": 0.9, \"default\": 0.85, \"step\": 0.01},\n]\n\n\ndef process(x, sr, params):\n    global _GAIN\n    level = 20.0 * np.log10(np.sqrt(np.mean(np.square(x)) + 1e-12) + 1e-9)\n    target = 1.0 if level > params[\"threshold\"] else 1.0 - params[\"range\"]\n    n = len(x)\n    tau = 0.02 if target > _GAIN else 0.08\n    curve = target + (_GAIN - target) * np.exp(\n        -np.arange(1, n + 1, dtype=np.float32) / (sr * tau))\n    _GAIN = float(curve[-1])\n    return (x * curve[:, None]).astype(np.float32)\n",
+  "updatedAt": "2026-11-12 00:30:00"
+}

@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "slug": "8bit-pixel",
+  "name": "8-bit 像素音",
+  "author": "Intro Voice",
+  "version": "1.0.0",
+  "license": "MIT",
+  "description": "降低位深并保持采样，做出复古游戏与像素视频的电子音。",
+  "code": "def _crush(x, bits, hold):\n    levels = float(2 ** int(bits))\n    held = np.repeat(x[::hold], hold, axis=0)[:len(x)]\n    return np.round(held * levels) / levels\n\nPARAMS = [\n    {\"id\": \"bits\", \"name\": \"位深\", \"min\": 4.0, \"max\": 12.0, \"default\": 6.0, \"step\": 1.0, \"unit\": \"bit\"},\n    {\"id\": \"hold\", \"name\": \"采样保持\", \"min\": 2.0, \"max\": 40.0, \"default\": 8.0, \"step\": 1.0},\n    {\"id\": \"mix\", \"name\": \"混合\", \"min\": 0.0, \"max\": 1.0, \"default\": 0.85, \"step\": 0.01},\n]\n\n\ndef process(x, sr, params):\n    y = _crush(x, params[\"bits\"], int(params[\"hold\"]))\n    return ((1.0 - params[\"mix\"]) * x + params[\"mix\"] * y).astype(np.float32)\n",
+  "updatedAt": "2026-11-12 00:30:00"
+}

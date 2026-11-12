@@ -1,8 +1,8 @@
 # 创意工坊 · 插件格式
 
 在 Intro Voice 音拓 →「创意工坊」里可以直接写一个声音效果器：一段 Python 代码 + 一组参数声明。
-保存后立即进入效果链（内置效果之后、VST3 之前），也可以一键发布到
-[Intro-Voice-Plugin-Market](https://github.com/HandaQAQ-Code/Intro-Voice-Plugin-Market)。
+保存后立即进入效果链（内置效果之后、限幅之前），也可以一键发布到
+[intro-voice-plugin-market](https://gitee.com/handa2500/intro-voice-plugin-market)（国内源，GitHub 为备用镜像）。
 
 ## 从示例代码开始
 
@@ -67,7 +67,7 @@ def process(x, sr, params):
 
 1. 先「保存并启用」，确认插件可用；
 2. 点「发布到市场」，确认许可与作者信息；
-3. 客户端会克隆 `git@github.com:HandaQAQ-Code/Intro-Voice-Plugin-Market.git`，
+3. 客户端会克隆 `git@gitee.com:handa2500/intro-voice-plugin-market.git`，
    写入 `plugins/<slug>/plugin.json` 与 `README.md`，重建 `catalog.json` 并推送。
 
 发布需要本机已配置该仓库的 SSH 权限。失败时会明确报错，且不会留下半成品提交。
