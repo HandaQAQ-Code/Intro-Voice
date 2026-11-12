@@ -516,6 +516,10 @@ def publish(root: Path, slug: str, message: str = "") -> dict:
             shutil.rmtree(repo, ignore_errors=True)
             raise RuntimeError(f"市场仓库定位异常（{origin} → {top}），已中止，未做任何提交")
     else:
+        # 旧缓存仓库指向 GitHub：切到 Gitee 国内源，发布仍推同一分支。
+        origin = _git(["remote", "get-url", "origin"], cwd=repo)
+        if origin != MARKET_SSH:
+            _git(["remote", "set-url", "origin", MARKET_SSH], cwd=repo)
         try:
             _git(["pull", "--ff-only"], cwd=repo)
         except RuntimeError:
