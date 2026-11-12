@@ -37,6 +37,7 @@ import java.util.function.IntConsumer;
 public final class MainActivity extends Activity {
     private static final int REQ_MIC = 101;
     private static final int REQ_NOTIF = 102;
+    private static final int REQ_CAMERA = 103;
     private static final String PREFS = "mic";
 
     private SharedPreferences prefs;
@@ -573,6 +574,12 @@ public final class MainActivity extends Activity {
             } else {
                 toast("没有麦克风权限，无法采集；请到系统设置里允许");
             }
+        } else if (requestCode == REQ_CAMERA) {
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
+                launchScanner();
+            } else {
+                toast("没有相机权限，无法扫码；请手动填写电脑 IP 和 PIN");
+            }
         }
     }
 
@@ -760,12 +767,30 @@ public final class MainActivity extends Activity {
     // ------------------------------------------------------------ 扫码
 
     private void startScan() {
-        new IntentIntegrator(this)
-                .setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
-                .setPrompt("对准电脑端「手机麦克风」页的二维码")
-                .setBeepEnabled(false)
-                .setOrientationLocked(true)
-                .initiateScan();
+        // 扫码库不会自己申请相机权限：先申请，授权后再打开扫码界面，
+        // 否则某些机型会直接抛 SecurityException 闪退。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                && checkSelfPermission(Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA);
+            return;
+        }
+        launchScanner();
+    }
+
+    private void launchScanner() {
+        try {
+            new IntentIntegrator(this)
+                    .setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+                    .setPrompt("对准电脑端「手机麦克风」页的二维码")
+                    .setBeepEnabled(false)
+                    .setBarcodeImageEnabled(false)
+                    .setOrientationLocked(true)
+                    .initiateScan();
+        } catch (Throwable t) {
+            // 相机被占用、系统没有扫码组件等异常都不能让 App 闪退。
+            toast("无法打开扫码：" + t.getClass().getSimpleName() + "；请手动填写 IP 和 PIN");
+        }
     }
 
     @Override
