@@ -442,6 +442,27 @@ def device_label(index: int) -> str:
     return f"{index}: {info['name']} [{host}]"
 
 
+# PortAudio 只在初始化时枚举一次设备，USB 麦克风热插拔后列表不会变。
+# 刷新设备时重建 PortAudio，用户就不用重启程序。
+_portaudio_lock = threading.Lock()
+_last_portaudio_refresh = 0.0
+
+
+def refresh_portaudio(min_interval: float = 1.0) -> None:
+    global _last_portaudio_refresh
+    now = time.monotonic()
+    with _portaudio_lock:
+        if now - _last_portaudio_refresh < min_interval:
+            return
+        _last_portaudio_refresh = now
+        try:
+            sd._terminate()
+            sd._initialize()
+            LOG.info("已重新枚举音频设备")
+        except Exception:
+            LOG.warning("刷新音频设备列表失败", exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # live machine metrics (CPU / RAM / GPU)
 # ---------------------------------------------------------------------------
@@ -1217,6 +1238,36 @@ class Service:
                 "cableReal": cable_real, "cableDetected": cable_detected,
                 "inputDefault": default_input, "virtual": virtual}
 
+    def _preferred_input_device(self) -> int:
+        """录音默认设备：优先物理麦克风，避开 CABLE 这类虚拟输入。"""
+        try:
+            devices = self._devices()
+        except Exception:
+            return -1
+        wanted = str(devices.get("inputDefault") or "")
+        inputs = devices.get("inputs") or []
+        for item in inputs:
+            if item["label"] == wanted:
+                return int(item["id"])
+        for item in inputs:
+            if item["host"] == "Windows WASAPI" and "cable" not in str(item["name"]).lower():
+                return int(item["id"])
+        return int(inputs[0]["id"]) if inputs else -1
+
+    def _resolve_record_device(self) -> int:
+        """设置里保存的设备；热插拔后索引可能变化，名称对不上就重新挑一个。"""
+        device = int(self.settings.get("inputDevice", -1))
+        if device >= 0:
+            try:
+                info = sd.query_devices(device)
+                stored = str(self.settings.get("input") or "")
+                if (int(info.get("max_input_channels") or 0) > 0
+                        and (stored == "" or str(info["name"]) in stored)):
+                    return device
+            except Exception:
+                pass
+        return self._preferred_input_device()
+
     def _drain_events(self) -> None:
         while True:
             try:
@@ -1312,7 +1363,16 @@ class Service:
                 "gpuStatus": gpu_status,
                 "status": self._status()}
 
+    def _engine_running(self) -> bool:
+        thread = self.engine.thread if self.engine else None
+        return bool(thread and thread.is_alive())
+
     def cmd_devices(self, request):
+        # 刷新按钮/重新打开页面时重建 PortAudio，热插拔的 USB 麦克风立刻出现。
+        # 引擎或声纹录制正在占用设备时不能重建，否则会把正在用的音频流拆掉。
+        recording = bool(self._voice_rec and self._voice_rec.get("recording"))
+        if not self._engine_running() and not recording:
+            refresh_portaudio()
         return self._devices()
 
     def cmd_virtual_status(self, request):
@@ -1366,6 +1426,10 @@ class Service:
         sys_ok = True
         devices: dict = {}
         try:
+            # 引导页会持续轮询：低频重建 PortAudio，插上的新设备几秒内自动出现。
+            recording = bool(self._voice_rec and self._voice_rec.get("recording"))
+            if not self._engine_running() and not recording:
+                refresh_portaudio(min_interval=5.0)
             devices = self._devices()
         except Exception as exc:
             sys_ok = False
@@ -1691,6 +1755,9 @@ class Service:
         seconds = float(request.get("seconds", 6.0))
         seconds = max(3.0, min(30.0, seconds))
         device = int(request.get("device", -1))
+        if device < 0:
+            # 用设置页选中的麦克风；设备被拔出或索引变了就退回当前默认麦克风。
+            device = self._resolve_record_device()
         self._voice_rec = {
             "recording": True, "done": False, "error": "",
             "seconds": seconds, "elapsed": 0.0, "levelDb": -90.0,
@@ -1706,24 +1773,60 @@ class Service:
         rate = 16000
         state = self._voice_rec
         try:
+            import numpy as np
+
             if device < 0:
-                try:
-                    device = int(sd.default.device[0])
-                except Exception:
-                    device = -1
+                device = self._preferred_input_device()
+            try:
+                info = sd.query_devices(device) if device >= 0 else sd.query_devices(kind="input")
+            except Exception:
+                # 选中的设备被拔掉了：退回当前默认麦克风，而不是录出一段静音。
+                device = self._preferred_input_device()
+                info = sd.query_devices(device) if device >= 0 else sd.query_devices(kind="input")
+            name = str(info["name"])
+            # 用设备原生采样率采集，再重采样到 16 kHz。很多 USB / 蓝牙麦克风
+            # 不支持直接开 16 kHz，强行开会失败或只拿到静音。
+            capture_rate = int(round(float(info.get("default_samplerate") or 48000)))
+            capture_rate = max(8000, min(192000, capture_rate))
+            max_channels = int(info.get("max_input_channels") or 1)
+            frame = max(1, int(capture_rate * 0.05))  # 50 ms 一块，便于更新电平
+            # 多录 0.15 秒：重采样到 16 kHz 时会掉几个采样，恰好卡在 3 秒门槛上会误报“有效声音不足”。
+            total = int(capture_rate * (seconds + 0.15))
+            if state is not None:
+                state["message"] = f"正在使用：{name}"
+
+            stream = None
+            last_error: Exception | None = None
+            channels = 1
+            # 和“刷新设备”互斥：PortAudio 重建时不能同时开流。
+            with _portaudio_lock:
+                for ch in (1, 2):
+                    if ch > max_channels:
+                        continue
+                    try:
+                        stream = sd.InputStream(
+                            samplerate=capture_rate, channels=ch, dtype="float32",
+                            device=device if device >= 0 else None,
+                            blocksize=frame,
+                            extra_settings=_device_options(device) if device >= 0 else None)
+                        stream.start()
+                        channels = ch
+                        break
+                    except sd.PortAudioError as exc:
+                        last_error = exc
+                        stream = None
+            if stream is None:
+                raise RuntimeError(f"无法打开麦克风：{name}（{last_error}）")
+
             blocks: list = []
-            frame = int(rate * 0.05)  # 50 ms 一块，便于更新电平
-            total = int(rate * seconds)
             got = 0
-            with sd.InputStream(samplerate=rate, channels=1, dtype="float32",
-                                device=device if device >= 0 else None,
-                                blocksize=frame) as stream:
+            try:
                 if state is not None:
                     state["message"] = "请开始朗读提示文字…"
                 while got < total:
                     if state is not None and not state.get("recording"):
                         return  # 用户取消
-                    chunk, overflowed = stream.read(frame)
+                    chunk, _overflowed = stream.read(frame)
                     if chunk is None or len(chunk) == 0:
                         continue
                     mono = chunk[:, 0].copy()
@@ -1731,11 +1834,26 @@ class Service:
                     got += len(mono)
                     rms = float(np.sqrt(np.mean(np.square(mono)) + 1e-12))
                     if state is not None:
-                        state["elapsed"] = min(seconds, got / rate)
+                        state["elapsed"] = min(seconds, got / capture_rate)
                         state["levelDb"] = 20.0 * float(np.log10(rms + 1e-9))
+            finally:
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    pass
+
             if not blocks:
-                raise RuntimeError("没有录到音频，请检查麦克风")
+                raise RuntimeError(f"没有录到音频，请检查麦克风：{name}")
             audio = np.concatenate(blocks).astype(np.float32)
+            if capture_rate != rate:
+                audio = soxr.resample(audio, capture_rate, rate).astype(np.float32)
+            level = 20.0 * float(np.log10(
+                float(np.sqrt(np.mean(np.square(audio)) + 1e-12)) + 1e-9))
+            if level < -60.0:
+                raise RuntimeError(
+                    f"麦克风没有声音（{name}，电平 {level:.0f} dB）。"
+                    "请确认输入设备选的是电脑麦克风、系统未静音，再重新录制。")
             from live_voice import save_sample
             save_sample(audio)
             if state is not None:
