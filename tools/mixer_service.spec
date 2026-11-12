@@ -35,6 +35,30 @@ hiddenimports = [
     "live_voice",
     "super_resolution",
     "gpu_install",
+    # torch 是运行时从本机 Python 环境复用进来的（不在包内），它内部还会
+    # 延迟 import 一批标准库模块；PyInstaller 默认只收显式依赖，漏掉这些
+    # 就会在 import torch 时报 ModuleNotFoundError。
+    "pickletools",
+    "unittest",
+    "unittest.mock",
+    "xml.etree.ElementTree",
+    "xml.sax",
+    "xml.sax.saxutils",
+    "tarfile",
+    "zipfile",
+    "ctypes.util",
+    "multiprocessing",
+    "multiprocessing.spawn",
+    "uuid",
+    "platform",
+    "glob",
+    "fnmatch",
+    "shutil",
+    "base64",
+    "struct",
+    "email",
+    "email.parser",
+    "http.client",
 ]
 hiddenimports += collect_submodules("onnxruntime")
 hiddenimports += collect_submodules("voxlock")

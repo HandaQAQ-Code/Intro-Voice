@@ -185,6 +185,36 @@ def _where_pythons() -> list[str]:
     return out_paths
 
 
+def _conda_env_pythons() -> list[str]:
+    """Conda / MiniConda 下所有环境的 python.exe（用户经常把 CUDA 环境建在这里）。"""
+    out_paths: list[str] = []
+    bases = [
+        Path(os.environ.get("USERPROFILE", "")) / "anaconda3",
+        Path(os.environ.get("USERPROFILE", "")) / "miniconda3",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "anaconda3",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "miniconda3",
+        Path(os.environ.get("PROGRAMDATA", "")) / "anaconda3",
+        Path(os.environ.get("PROGRAMDATA", "")) / "miniconda3",
+        Path("C:/ProgramData/miniconda3"),
+        Path("C:/ProgramData/anaconda3"),
+    ]
+    for base in bases:
+        exe = base / "python.exe"
+        if exe.is_file():
+            out_paths.append(str(exe))
+        envs = base / "envs"
+        if not envs.is_dir():
+            continue
+        try:
+            for entry in envs.iterdir():
+                exe = entry / "python.exe"
+                if entry.is_dir() and exe.is_file():
+                    out_paths.append(str(exe))
+        except OSError:
+            continue
+    return out_paths
+
+
 def _common_dir_pythons() -> list[str]:
     """扫描常见安装目录里所有 Python3XX。"""
     out_paths: list[str] = []
@@ -236,6 +266,7 @@ def discover_pythons(root: Path, preferred: str | None = None) -> list[dict]:
     candidates += _py_launcher_pythons()
     candidates += _where_pythons()
     candidates += _common_dir_pythons()
+    candidates += _conda_env_pythons()
 
     seen: set[str] = set()
     result: list[dict] = []
@@ -307,7 +338,8 @@ def _probe_torch_uncached(python: str) -> dict | None:
         "print(os.path.dirname(os.path.dirname(torch.__file__)))"
     )
     try:
-        out = subprocess.run([python, "-c", probe], **_run_kwargs(timeout=30))
+        # 首次 import torch 要加载几 GB 的 CUDA 运行库，冷启动可能超过 30 s。
+        out = subprocess.run([python, "-c", probe], **_run_kwargs(timeout=90))
     except (OSError, subprocess.SubprocessError):
         return None
     lines = [ln.strip() for ln in (out.stdout or "").splitlines() if ln.strip()]
@@ -457,6 +489,13 @@ _scan_lock = threading.Lock()
 SCAN_TTL_SECONDS = 300.0
 
 
+def reset_caches() -> None:
+    """清掉 Python 发现与 torch 探测缓存（用户换了环境/刚装完 torch 时用）。"""
+    with _scan_lock:
+        _scan_cache.clear()
+    _probe_cache.clear()
+
+
 def discover_pythons_cached(root: Path, preferred: str | None = None,
                             force: bool = False) -> list[dict]:
     """带缓存的 Python 列表（5 分钟内复用结果，避免反复起子进程）。"""
@@ -487,6 +526,11 @@ def auto_enable_native(root: Path, preferred: str | None = None) -> dict | None:
     返回 {python, sitePackages, torchVersion, cuda, reused} 或 None。
     """
     pref = read_native_preference(root)
+    if pref:
+        # 用户在引导/设置里换了 Python：旧记录立即作废，按新解释器重新检测。
+        chosen = str(pref.get("python") or "")
+        if preferred and Path(preferred).is_file() and chosen.lower() != preferred.lower():
+            pref = None
     if pref:
         site = str(pref.get("sitePackages") or "")
         if site and Path(site).is_dir():
@@ -553,12 +597,23 @@ def apply_native_to_syspath(root: Path) -> bool:
         return False
     if site not in sys.path:
         sys.path.insert(0, site)
+    # frozen 引擎只打包了自身用到的标准库模块，torch 运行期还会 import
+    # pickletools、unittest.mock 等；把本机 Python 的 Lib 目录挂到末尾兜底，
+    # 缺失的模块按需从磁盘加载（版本与冻结解释器一致）。
+    stdlib = Path(site).parent
+    if (stdlib / "os.py").is_file() and str(stdlib) not in sys.path:
+        sys.path.append(str(stdlib))
     # torch 的 C 扩展依赖它自带的 CUDA 运行库（torch/lib 下），
     # 在 frozen 引擎里手动加入 DLL 搜索路径，确保 import 时不缺 DLL。
     try:
         lib_dir = Path(site) / "torch" / "lib"
-        if lib_dir.is_dir() and hasattr(os, "add_dll_directory"):
-            os.add_dll_directory(str(lib_dir))
+        if lib_dir.is_dir():
+            if hasattr(os, "add_dll_directory"):
+                os.add_dll_directory(str(lib_dir))
+            # 部分依赖（c10.dll、nvrtc）仍按 PATH 查找；补在最前面，只增不减。
+            current = os.environ.get("PATH", "")
+            if str(lib_dir) not in current.split(os.pathsep):
+                os.environ["PATH"] = str(lib_dir) + os.pathsep + current
     except OSError:
         pass
     return True
