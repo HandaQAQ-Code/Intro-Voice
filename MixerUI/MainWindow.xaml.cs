@@ -33,16 +33,13 @@ public sealed class NotBoolConverter : Microsoft.UI.Xaml.Data.IValueConverter
 public sealed partial class MainWindow : Window
 {
     private readonly ServiceClient _client = new();
-    private readonly ObservableCollection<PluginItem> _plugins = new();
     private readonly ObservableCollection<PresetItem> _presets = new();
     private readonly ObservableCollection<MarketItem> _market = new();
     private readonly ObservableCollection<string> _messages = new();
-    private readonly Dictionary<(int plugin, int param), double> _pendingParams = new();
 
     private List<DeviceItem> _inputs = new();
     private List<DeviceItem> _outputs = new();
     private readonly DispatcherQueueTimer _statusTimer;
-    private readonly DispatcherQueueTimer _paramTimer;
     private readonly DispatcherQueueTimer _optionTimer;
     private readonly DispatcherQueueTimer _dspTimer;
     private readonly DispatcherQueueTimer _micTimer;
@@ -51,16 +48,17 @@ public sealed partial class MainWindow : Window
     private string _savedInputLabel = "";
     private string _savedOutputLabel = "";
     private bool _suppressOptions;
-    private bool _suppressParam;
     private bool _dspSyncing;
     private bool _dspDirty;
     private bool _polling;
     private int _pollCount;
-    private bool _flushingParams;
     private bool _busy;
     private bool _connected;
     private bool _running;
+    private bool _loading;
     private bool _muted;
+    /// <summary>启动/停止请求进行中：按钮临时禁用，避免重复下发。</summary>
+    private bool _transportBusy;
     private bool _gpuAvailable;
     private string _gpuNote = "";
     private bool _gpuInstalled;
@@ -82,17 +80,28 @@ public sealed partial class MainWindow : Window
     private string _micView = "virtual";
     private DateTime _micSourcePushedAt = DateTime.MinValue;
     private bool _suppressSettings;
+    private bool _applyingDevices;
     private string _theme = "system";
 
     public MainWindow()
     {
         InitializeComponent();
         SetupTitleBar();
-        // 侧边栏收起成 52px 窄条时，底部操作区放不下，整块隐藏。
+        // 跟随系统时，系统主题变了也要刷新侧边栏按钮上的图标与文案。
+        RootLayout.ActualThemeChanged += (_, _) => SyncThemeToggle();
+        SyncThemeToggle();
+        // 展开时显示完整状态与按钮，收起时换成和导航项一样的图标列（不是整块消失）。
         // 用属性回调而不是 PaneOpening/PaneClosing：窗口变窄时 NavigationView 会自动收起，
         // 那条路径不一定触发 Closing 事件。
-        Nav.RegisterPropertyChangedCallback(NavigationView.IsPaneOpenProperty, (_, _) =>
-            PaneFooterBox.Visibility = Nav.IsPaneOpen ? Visibility.Visible : Visibility.Collapsed);
+        void SyncPaneFooter()
+        {
+            bool open = Nav.IsPaneOpen;
+            PaneFooterBox.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+            PaneFooterCompact.Visibility = open ? Visibility.Collapsed : Visibility.Visible;
+        }
+        Nav.RegisterPropertyChangedCallback(NavigationView.IsPaneOpenProperty,
+            (_, _) => SyncPaneFooter());
+        SyncPaneFooter();
         App.Trace("mainwindow: xaml loaded");
         // Negative ranges must be set in code: assigning Maximum below the
         // default Minimum (0) is rejected by RangeBase during XAML load.
@@ -156,7 +165,6 @@ public sealed partial class MainWindow : Window
         };
         LatencyCombo.SelectedIndex = 0;
 
-        ChainList.ItemsSource = _plugins;
         PresetCombo.ItemsSource = _presets;
         MarketList.ItemsSource = _market;
         WorkshopList.ItemsSource = _workshop;
@@ -168,20 +176,11 @@ public sealed partial class MainWindow : Window
         WorkshopList.Visibility = Visibility.Collapsed;
         WorkshopEmpty.Visibility = Visibility.Visible;
         MessageList.ItemsSource = _messages;
-        // 空状态：没有数据时显示引导文案，列表隐藏。
-        ChainList.Visibility = Visibility.Collapsed;
-        ParamEmpty.Visibility = Visibility.Visible;
-        ChainEmpty.Visibility = Visibility.Visible;
 
         _statusTimer = DispatcherQueue.CreateTimer();
         _statusTimer.Interval = TimeSpan.FromMilliseconds(500);
         _statusTimer.Tick += PollStatus;
         _statusTimer.Start();
-
-        _paramTimer = DispatcherQueue.CreateTimer();
-        _paramTimer.Interval = TimeSpan.FromMilliseconds(150);
-        _paramTimer.Tick += FlushParams;
-        _paramTimer.Start();
 
         _optionTimer = DispatcherQueue.CreateTimer();
         _optionTimer.Interval = TimeSpan.FromMilliseconds(300);
@@ -207,7 +206,6 @@ public sealed partial class MainWindow : Window
 
         SetMicView("virtual");
         SetMicSource("device", false);
-        Nav.SizeChanged += (_, _) => UpdatePageHeights();
         Closed += OnClosed;
         App.Trace("mainwindow: ctor end");
         _ = ConnectAsync();
@@ -292,7 +290,40 @@ public sealed partial class MainWindow : Window
             _ => ElementTheme.Default,
         };
         ApplyTitleBarColors();
+        SyncThemeToggle();
         if (persist) _ = SaveThemeAsync(_theme);
+    }
+
+    /// <summary>当前是否处于深色外观（跟随系统时按实际主题判断）。</summary>
+    private bool IsDarkActive => _theme == "dark"
+        || (_theme == "system" && RootLayout.ActualTheme == ElementTheme.Dark);
+
+    /// <summary>侧边栏的深浅色切换：按钮显示「将要切换到」的模式。</summary>
+    private void ThemeToggle_Click(object sender, RoutedEventArgs e)
+    {
+        bool dark = IsDarkActive;
+        string target = dark ? "light" : "dark";
+        ApplyTheme(target, persist: true);
+        // 设置页的下拉同步到同一状态，避免两处显示不一致。
+        if (SettingsTheme is not null)
+        {
+            _suppressSettings = true;
+            SettingsTheme.SelectedIndex = target == "light" ? 1 : 2;
+            _suppressSettings = false;
+        }
+    }
+
+    private void SyncThemeToggle()
+    {
+        if (ThemeToggleIcon is null || ThemeToggleLabel is null) return;
+        bool dark = IsDarkActive;
+        string glyph = dark ? "\uE706" : "\uE708";
+        ThemeToggleIcon.Glyph = glyph;
+        if (ThemeToggleCompactIcon is not null) ThemeToggleCompactIcon.Glyph = glyph;
+        ThemeToggleLabel.Text = dark ? "浅色模式" : "深色模式";
+        string tip = dark ? "切换到浅色模式" : "切换到深色模式";
+        ToolTipService.SetToolTip(ThemeToggleButton, tip);
+        if (ThemeToggleCompact is not null) ToolTipService.SetToolTip(ThemeToggleCompact, tip);
     }
 
     private async Task SaveThemeAsync(string theme)
@@ -335,8 +366,6 @@ public sealed partial class MainWindow : Window
             App.Trace("connect: devices applied");
             ApplySettings(hello.GetProperty("settings"));
             App.Trace("connect: settings applied");
-            ApplyPlugins(hello.GetProperty("plugins"));
-            App.Trace("connect: plugins applied");
             string chainError = Str(hello, "chainError");
             if (chainError.Length > 0) ShowError(chainError);
             _gpuAvailable = Bool(hello, "gpuAvailable");
@@ -362,7 +391,7 @@ public sealed partial class MainWindow : Window
                 _ = RefreshMicStatusAsync(true);
             StatusDot.Fill = new SolidColorBrush(Color.FromArgb(255, 76, 201, 116));
             ServiceText.Text = notice;
-            StartButton.IsEnabled = true;
+            UpdateTransportState();
             App.Trace("connect: done");
             // 第一次打开（没看过教程）自动展示新手教程。
             if (hello.TryGetProperty("settings", out var helloSettings)
@@ -377,6 +406,7 @@ public sealed partial class MainWindow : Window
             StatusDot.Fill = new SolidColorBrush(Color.FromArgb(255, 214, 69, 69));
             ServiceText.Text = "服务未连接";
             App.Trace($"connect failed: {ex.Message}");
+            UpdateTransportState();
             ShowError(ex.Message);
         }
         finally
@@ -404,17 +434,46 @@ public sealed partial class MainWindow : Window
     {
         _inputs = ParseDevices(devices.GetProperty("inputs"));
         _outputs = ParseDevices(devices.GetProperty("outputs"));
-        InputCombo.ItemsSource = _inputs;
-        OutputCombo.ItemsSource = _outputs;
+        // 重建列表会触发 SelectionChanged：这里的选择是程序补的，不能当成用户操作写回设置。
+        _applyingDevices = true;
+        try
+        {
+            InputCombo.ItemsSource = _inputs;
+            OutputCombo.ItemsSource = _outputs;
 
-        string cableLabel = Str(devices, "cableOutput");
-        string defaultInput = Str(devices, "inputDefault");
-        SelectDevice(InputCombo, _inputs, _savedInputLabel, defaultInput);
-        SelectDevice(OutputCombo, _outputs, _savedOutputLabel, cableLabel);
+            string cableLabel = Str(devices, "cableOutput");
+            string defaultInput = Str(devices, "inputDefault");
+            SelectDevice(InputCombo, _inputs, _savedInputLabel, defaultInput);
+            SelectDevice(OutputCombo, _outputs, _savedOutputLabel, cableLabel);
+        }
+        finally
+        {
+            _applyingDevices = false;
+        }
         UpdateRoutingText();
         if (devices.TryGetProperty("virtual", out var virtualStatus))
             ApplyVirtualStatus(virtualStatus);
         UpdateMicDeviceName();
+    }
+
+    /// <summary>用户改选麦克风后立刻存进设置，录音/启动都直接用这一只，不用先点启动。</summary>
+    private async void InputCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        UpdateRoutingText();
+        if (_applyingDevices || !_connected) return;
+        if (InputCombo.SelectedItem is not DeviceItem item) return;
+        if (item.Label == _savedInputLabel) return;
+        _savedInputLabel = item.Label;
+        try
+        {
+            await _client.CallAsync("settings_set",
+                new JsonObject { ["inputDevice"] = item.Id }, 10000);
+            ShowError($"已选择输入麦克风：{item.Label}", InfoBarSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            ShowError("保存麦克风选择失败：" + ex.Message);
+        }
     }
 
     private static void SelectDevice(ComboBox combo, List<DeviceItem> items, string saved, string fallback)
@@ -462,44 +521,6 @@ public sealed partial class MainWindow : Window
         {
             _suppressOptions = false;
         }
-    }
-
-    private void ApplyPlugins(JsonElement array)
-    {
-        int previous = (ChainList.SelectedItem as PluginItem)?.Index ?? -1;
-        _suppressParam = true;
-        _plugins.Clear();
-        if (array.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var item in array.EnumerateArray())
-            {
-                _plugins.Add(new PluginItem
-                {
-                    Index = (int)Num(item, "index", _plugins.Count),
-                    Name = Str(item, "name"),
-                    Vendor = Str(item, "vendor"),
-                    Path = Str(item, "path"),
-                    ClassId = Str(item, "classId"),
-                    Bypass = Bool(item, "bypass"),
-                    ParamCount = (int)Num(item, "paramCount", 0),
-                });
-            }
-        }
-        var restored = _plugins.FirstOrDefault(p => p.Index == previous);
-        ChainList.SelectedItem = restored;
-        if (restored is null)
-        {
-            ParamList.ItemsSource = null;
-            ParamsTitle.Text = "插件参数";
-            ParamEmpty.Visibility = Visibility.Visible;
-        }
-        ChainEmpty.Visibility = _plugins.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        ChainList.Visibility = _plugins.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
-        ChainCountText.Text = _plugins.Count == 0 ? "尚未加载插件" : $"{_plugins.Count} 个插件 · 按顺序串联";
-        PluginBadge.Value = _plugins.Count;
-        PluginBadge.Visibility = _plugins.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
-        _suppressParam = false;
-        UpdateChainButtons();
     }
 
     // ------------------------------------------------------------------
@@ -763,9 +784,16 @@ public sealed partial class MainWindow : Window
     // ------------------------------------------------------------------
     // transport
     // ------------------------------------------------------------------
-    private async void Start_Click(object sender, RoutedEventArgs e)
+    /// <summary>启动/停止共用同一个按钮：按当前状态决定这次点击是启动还是停止。</summary>
+    private async void Transport_Click(object sender, RoutedEventArgs e)
     {
-        if (!_connected) return;
+        if (!_connected || _transportBusy) return;
+        if (_running || _loading) await StopAsync();
+        else await StartAsync();
+    }
+
+    private async Task StartAsync()
+    {
         var input = InputCombo.SelectedItem as DeviceItem;
         var output = OutputCombo.SelectedItem as DeviceItem;
         if (input is null || output is null)
@@ -786,6 +814,9 @@ public sealed partial class MainWindow : Window
             ["dsp"] = BuildDspParams(),
         };
         SetBusy(true, "正在启动音频链路…");
+        // 先切到“启动中”再做 RPC：状态轮询最快 500 ms 才回来，避免这段时间被连点。
+        _transportBusy = true;
+        UpdateTransportState();
         try
         {
             await _client.CallAsync("start", args, 30000);
@@ -797,13 +828,17 @@ public sealed partial class MainWindow : Window
         }
         finally
         {
+            _transportBusy = false;
             SetBusy(false);
+            UpdateTransportState();
         }
     }
 
-    private async void Stop_Click(object sender, RoutedEventArgs e)
+    private async Task StopAsync()
     {
-        if (!_connected) return;
+        // 立刻反馈，等待引擎真正停下（加载 AI 模型期间停止可能需要数秒）。
+        _transportBusy = true;
+        UpdateTransportState();
         try
         {
             await _client.CallAsync("stop", null, 15000);
@@ -811,6 +846,11 @@ public sealed partial class MainWindow : Window
         catch (Exception ex)
         {
             ShowError(ex.Message);
+        }
+        finally
+        {
+            _transportBusy = false;
+            UpdateTransportState();
         }
     }
 
@@ -823,6 +863,7 @@ public sealed partial class MainWindow : Window
             await _client.CallAsync("set_options", new JsonObject { ["muted"] = target }, 10000);
             _muted = target;
             MuteButton.Content = _muted ? "取消静音" : "静音";
+            SyncMuteCompact();
         }
         catch (Exception ex)
         {
@@ -861,8 +902,13 @@ public sealed partial class MainWindow : Window
         bool running = Bool(status, "running");
         bool loading = Bool(status, "loading");
         _running = running;
+        _loading = loading;
         RunStateText.Text = loading ? "正在加载 AI 模型…" : running ? "运行中" : "已停止";
         EnginePillText.Text = loading ? "引擎加载中" : running ? "引擎运行中" : "引擎已停止";
+        // 引擎状态点：加载中琥珀色、运行中绿色、停止灰色，和文字一起说明当前阶段。
+        EngineDot.Fill = new SolidColorBrush(loading
+            ? Color.FromArgb(255, 224, 166, 74)
+            : running ? Color.FromArgb(255, 76, 201, 116) : Color.FromArgb(255, 150, 150, 150));
         var backend = Str(status, "backend");
         BackendText.Text = backend.Length > 0 ? backend : "—";
 
@@ -890,6 +936,7 @@ public sealed partial class MainWindow : Window
 
         _muted = Bool(status, "muted");
         MuteButton.Content = _muted ? "取消静音" : "静音";
+        SyncMuteCompact();
 
         ApplySystemMetrics(status);
         ApplySpectrum(status, running);
@@ -914,9 +961,60 @@ public sealed partial class MainWindow : Window
         if (fault.Length > 0) ShowError(fault);
 
         BusyRing.IsActive = _busy || loading;
-        StartButton.IsEnabled = _connected && !running && !loading;
-        StopButton.IsEnabled = _connected && (running || loading);
+        UpdateTransportState();
         MuteButton.IsEnabled = _connected && running;
+    }
+
+    /// <summary>
+    /// 侧边栏唯一的传输按钮：未运行时「启动」，运行/加载时同一按钮变成「停止」，
+    /// 请求进行中显示“启动中…/停止中…”并临时禁用，禁用原因写在 ToolTip 里。
+    /// </summary>
+    private void UpdateTransportState()
+    {
+        bool active = _running || _loading;
+        TransportButton.IsEnabled = _connected && !_transportBusy;
+
+        string label;
+        string glyph;
+        string tip;
+        if (_transportBusy)
+        {
+            bool stopping = active;
+            label = stopping ? "停止中…" : "启动中…";
+            glyph = stopping ? "\uE71A" : "\uE768";
+            tip = stopping ? "正在停止音频链路…" : "正在启动音频链路…";
+        }
+        else if (_loading)
+        {
+            label = "停止";
+            glyph = "\uE71A";
+            tip = "正在加载 AI 模型，点击可取消启动";
+        }
+        else if (_running)
+        {
+            label = "停止";
+            glyph = "\uE71A";
+            tip = "停止音频链路";
+        }
+        else
+        {
+            label = "启动";
+            glyph = "\uE768";
+            tip = _connected ? "启动音频链路（麦克风 → CABLE Input）" : "尚未连接调音台服务，请稍候或重启程序";
+        }
+
+        TransportLabel.Text = label;
+        TransportIcon.Glyph = glyph;
+        TransportCompactIcon.Glyph = glyph;
+        ToolTipService.SetToolTip(TransportButton, tip);
+        ToolTipService.SetToolTip(TransportCompact, tip);
+    }
+
+    /// <summary>图标列里的静音按钮：图标跟着状态切换，ToolTip 说明点击后会发生什么。</summary>
+    private void SyncMuteCompact()
+    {
+        MuteCompactIcon.Glyph = _muted ? "\uE74F" : "\uE767";
+        ToolTipService.SetToolTip(MuteCompact, _muted ? "取消静音" : "静音");
     }
 
     /// <summary>把引擎侧的真实压缩量 / 门状态显示出来，方便对准阈值。</summary>
@@ -937,7 +1035,7 @@ public sealed partial class MainWindow : Window
             ? (Bool(dsp, "gateOpen") ? "门状态：开启（信号通过）" : "门状态：关闭（已衰减）")
             : "门状态 —（未启用）";
         int nan = (int)Num(dsp, "nanBlocks", 0);
-        if (nan > 0) DspStatusText.Text = $"顺序：高通 → 低通 → 噪声门 → 压缩 → 三段 EQ → VST3 链 → 限幅（异常块 {nan}）";
+        if (nan > 0) DspStatusText.Text = $"顺序：高通 → 低通 → 噪声门 → 压缩 → 三段 EQ → 插件链 → 限幅（异常块 {nan}）";
     }
 
     /// <summary>把引擎算好的 32 段频谱交给自绘控件；停止时归零。</summary>
@@ -996,25 +1094,232 @@ public sealed partial class MainWindow : Window
     }
 
     // ------------------------------------------------------------------
-    // layout
+    // 插件页：工坊插件的开关与实时参数（运行中也能改）
     // ------------------------------------------------------------------
-    /// <summary>TabView 的内容区按内容高度测量，这里让插件/预设页的卡片铺满窗口。</summary>
-    private void MainTabs_SizeChanged(object sender, SizeChangedEventArgs e) => UpdatePageHeights();
+    private readonly Dictionary<string, List<WorkshopParam>> _fxParams = new();
+    private readonly HashSet<string> _fxDirty = new();
+    private DispatcherQueueTimer? _fxTimer;
+    private bool _fxLoading;
+    private bool _fxSyncing;
 
-    private void RootLayout_Loaded(object sender, RoutedEventArgs e)
+    private async Task LoadFxPluginsAsync()
     {
-        // 首次布局还没结束时 ActualHeight 为 0，排到下一个调度周期再算一次。
-        DispatcherQueue.TryEnqueue(UpdatePageHeights);
+        if (!_connected || _fxLoading) return;
+        _fxLoading = true;
+        _fxSyncing = true;
+        try
+        {
+            var result = await _client.CallAsync("workshop_list", null, 20000);
+            FxListPanel.Children.Clear();
+            _fxParams.Clear();
+            _fxDirty.Clear();
+            int count = 0;
+            if (result.TryGetProperty("plugins", out var plugins) && plugins.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var p in plugins.EnumerateArray())
+                {
+                    string slug = Str(p, "slug");
+                    if (slug.Length == 0) continue;
+                    var values = p.TryGetProperty("values", out var v) && v.ValueKind == JsonValueKind.Object
+                        ? v : default;
+                    var paramList = ParseWorkshopParams(p, values);
+                    _fxParams[slug] = paramList;
+                    FxListPanel.Children.Add(BuildFxCard(p, slug, paramList));
+                    count++;
+                }
+            }
+            FxEmptyPanel.Visibility = count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+        }
+        finally
+        {
+            _fxSyncing = false;
+            _fxLoading = false;
+        }
     }
 
-    private void UpdatePageHeights()
+    /// <summary>一个插件一张卡：名称 + 开关 + 参数滑块，控件直接建在代码里便于按插件数量动态生成。</summary>
+    private FrameworkElement BuildFxCard(JsonElement plugin, string slug, List<WorkshopParam> paramList)
     {
-        double available = PagesRoot.ActualHeight;
-        if (available <= 0) return;
-        double min = Math.Max(360, available - 78);
-        PluginChainCard.MinHeight = min;
-        PluginParamsCard.MinHeight = min;
+        string name = Str(plugin, "name");
+        if (name.Length == 0) name = slug;
+        string description = Str(plugin, "description");
+        string compileError = Str(plugin, "compileError");
+
+        var body = new StackPanel { Spacing = 5 };
+
+        var header = new Grid { ColumnSpacing = 10 };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(new TextBlock
+        {
+            Text = name,
+            Style = (Style)Application.Current.Resources["SectionTitle"],
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+
+        if (compileError.Length > 0)
+        {
+            var badge = new Border
+            {
+                Style = (Style)Application.Current.Resources["PillBorder"],
+                Padding = new Thickness(8, 1, 8, 1),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            badge.Child = new TextBlock { Text = "无法加载", FontSize = 11 };
+            Grid.SetColumn(badge, 1);
+            header.Children.Add(badge);
+        }
+
+        var toggle = new ToggleSwitch
+        {
+            IsOn = Bool(plugin, "enabled"),
+            OnContent = "启用",
+            OffContent = "关闭",
+            IsEnabled = compileError.Length == 0,
+            Tag = slug,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        toggle.Toggled += FxEnable_Toggled;
+        Grid.SetColumn(toggle, 2);
+        header.Children.Add(toggle);
+        body.Children.Add(header);
+
+        if (description.Length > 0)
+        {
+            body.Children.Add(new TextBlock
+            {
+                Text = description,
+                Style = (Style)Application.Current.Resources["HintText"],
+            });
+        }
+        if (compileError.Length > 0)
+        {
+            body.Children.Add(new TextBlock
+            {
+                Text = "编译失败：" + compileError,
+                Style = (Style)Application.Current.Resources["HintText"],
+                Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed),
+            });
+        }
+
+        if (paramList.Count > 0)
+        {
+            var panel = new StackPanel { Spacing = 1, Margin = new Thickness(0, 2, 0, 0) };
+            foreach (var param in paramList)
+            {
+                var row = new Grid { ColumnSpacing = 10 };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(104) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(84) });
+                row.Children.Add(new TextBlock
+                {
+                    Text = param.Name,
+                    Style = (Style)Application.Current.Resources["MetricLabel"],
+                });
+
+                var valueText = new TextBlock
+                {
+                    Text = param.Display,
+                    Style = (Style)Application.Current.Resources["ValueText"],
+                    TextAlignment = TextAlignment.Right,
+                };
+                var slider = new Slider
+                {
+                    Minimum = param.Min,
+                    Maximum = param.Max,
+                    StepFrequency = param.Step,
+                    Value = param.Value,
+                    DataContext = param,
+                    Tag = slug,
+                    Margin = new Thickness(0, 0, 0, 2),
+                };
+                slider.ValueChanged += FxParam_Changed;
+                slider.ValueChanged += (_, _) => valueText.Text = param.Display;
+                Grid.SetColumn(slider, 1);
+                row.Children.Add(slider);
+                Grid.SetColumn(valueText, 2);
+                row.Children.Add(valueText);
+                panel.Children.Add(row);
+            }
+            body.Children.Add(panel);
+        }
+
+        return new Border
+        {
+            Style = (Style)Application.Current.Resources["InnerCardStyle"],
+            Child = body,
+        };
     }
+
+    private async void FxEnable_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_fxLoading || _fxSyncing || !_connected) return;
+        if (sender is not ToggleSwitch toggle || toggle.Tag is not string slug) return;
+        try
+        {
+            var result = await _client.CallAsync("workshop_enable",
+                new JsonObject { ["slug"] = slug, ["enabled"] = toggle.IsOn }, 20000);
+            string error = Str(result, "error");
+            if (error.Length > 0)
+                ShowError($"已切换，但部分插件未加载：{error}", InfoBarSeverity.Warning);
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+            _fxSyncing = true;
+            toggle.IsOn = !toggle.IsOn;
+            _fxSyncing = false;
+        }
+    }
+
+    private void FxParam_Changed(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (_fxLoading || _fxSyncing || !_connected) return;
+        if (sender is not Slider slider || slider.Tag is not string slug) return;
+        if (slider.DataContext is not WorkshopParam param) return;
+        param.Value = e.NewValue;
+        _fxDirty.Add(slug);
+
+        // 拖动时每帧都会触发，合并成 180 ms 一次下发，运行中即时生效。
+        _fxTimer ??= DispatcherQueue.CreateTimer();
+        _fxTimer.Interval = TimeSpan.FromMilliseconds(180);
+        _fxTimer.IsRepeating = false;
+        _fxTimer.Tick -= FlushFxParams;
+        _fxTimer.Tick += FlushFxParams;
+        _fxTimer.Start();
+    }
+
+    private async void FlushFxParams(DispatcherQueueTimer sender, object args)
+    {
+        if (!_connected || _fxDirty.Count == 0) return;
+        var slugs = _fxDirty.ToList();
+        _fxDirty.Clear();
+        foreach (var slug in slugs)
+        {
+            if (!_fxParams.TryGetValue(slug, out var paramList) || paramList.Count == 0) continue;
+            var values = new JsonObject();
+            foreach (var param in paramList)
+                values[param.Id] = param.Value;
+            try
+            {
+                await _client.CallAsync("workshop_params",
+                    new JsonObject { ["slug"] = slug, ["params"] = values }, 10000);
+            }
+            catch
+            {
+                // 参数下发失败不打断拖动，下一次会覆盖。
+            }
+        }
+    }
+
+    private async void FxRefresh_Click(object sender, RoutedEventArgs e) => await LoadFxPluginsAsync();
+
+    private void FxOpenMarket_Click(object sender, RoutedEventArgs e) => GoToPage("market");
 
     // ------------------------------------------------------------------
     // navigation
@@ -1048,6 +1353,8 @@ public sealed partial class MainWindow : Window
             _ = LoadMarketAsync(false);
         if (tag == "workshop" && _workshop.Count == 0)
             _ = LoadWorkshopAsync();
+        if (tag == "plugins")
+            _ = LoadFxPluginsAsync();
         if (tag == "settings")
             _ = LoadSettingsAsync();
         if (tag == "mic")
@@ -1854,14 +2161,14 @@ def process(x, sr, params):
         if (!phone)
         {
             // 从分支里退出来时回到「选麦克风」，别把用户丢到不存在的步骤号上。
-            _guideStep = _guideSteps.IndexOf(GuideStep.Mic);
+            _guideStep = Math.Max(0, _guideSteps.IndexOf(GuideStep.Mic));
             await _client.CallAsync("guide_source",
                 new JsonObject { ["inputSource"] = "device" }, 12000);
             ShowGuideToast("已改回本机麦克风 ✓");
         }
         else
         {
-            _guideStep = _guideSteps.IndexOf(GuideStep.Mic);
+            _guideStep = Math.Max(0, _guideSteps.IndexOf(GuideStep.Mic));
             ShowGuideToast("已加入手机麦克风分支教程");
         }
     }
@@ -2597,7 +2904,8 @@ def process(x, sr, params):
                 {
                     Id = (int)Num(item, "id", -1),
                     Label = Str(item, "label"),
-                    IsCable = Bool(item, "isCable"),
+                    // 只有「选输出」这一步才标「← 选这个」；麦克风列表里不要这个提示。
+                    IsCable = preferCable && Bool(item, "isCable"),
                 });
             }
         }
@@ -3003,7 +3311,7 @@ def process(x, sr, params):
         {
             XamlRoot = Content.XamlRoot,
             Title = "发布到插件市场",
-            Content = $"将把「{WsNameBox.Text}」推送到自托管仓库 HandaQAQ-Code/Intro-Voice-Plugin-Market。\n\n" +
+            Content = $"将把「{WsNameBox.Text}」推送到自托管仓库 handa2500/intro-voice-plugin-market（Gitee）。\n\n" +
                       $"许可：{license}\n发布后所有用户都能在插件市场一键安装；脚本会在本机以 Python 权限执行，" +
                       "请确认代码没有危险操作。",
             PrimaryButtonText = "发布",
@@ -3547,6 +3855,8 @@ def process(x, sr, params):
                     string license = Str(p, "license");
                     string kind = Str(p, "type");
                     bool workshop = kind == "workshop";
+                    // VST3 模块已移除：市场只展示可以直接运行的工坊插件。
+                    if (!workshop) continue;
                     double size = Num(p, "sizeMb", 0);
                     var parts = new List<string>();
                     if (workshop) parts.Add("创意工坊");
@@ -3558,13 +3868,12 @@ def process(x, sr, params):
                     {
                         Slug = slug,
                         Name = Str(p, "name"),
-                        Badge = license.Length > 0 ? license : workshop ? "工坊" : "VST3",
+                        Badge = license.Length > 0 ? license : "工坊",
                         Subtitle = string.Join(" · ", parts),
                         Summary = Str(p, "summary"),
                         Kind = kind,
                         Installed = installedSet.Contains(slug),
-                        CanInstall = (kind == "zip" && Str(p, "download").Length > 0) ||
-                                     (workshop && Str(p, "manifest").Length > 0),
+                        CanInstall = Str(p, "manifest").Length > 0,
                     });
                 }
             }
@@ -3636,9 +3945,7 @@ def process(x, sr, params):
             else
             {
                 await _client.CallAsync("market_install", new JsonObject { ["slug"] = item.Slug }, 300000);
-                ShowError(item.IsWorkshop
-                        ? $"{item.Name} 已安装，可在「创意工坊」页启用"
-                        : $"{item.Name} 已安装，可在「VST3 插件」页扫描后加入链",
+                ShowError($"{item.Name} 已安装，可在「插件」页打开开关并实时调参",
                     InfoBarSeverity.Success);
                 if (item.IsWorkshop)
                     await LoadWorkshopAsync(item.Slug);
@@ -4393,330 +4700,6 @@ def process(x, sr, params):
     }
 
     // ------------------------------------------------------------------
-    // plugin chain
-    // ------------------------------------------------------------------
-    private PluginItem? SelectedPlugin => ChainList.SelectedItem as PluginItem;
-
-    private void UpdateChainButtons()
-    {
-        var plugin = SelectedPlugin;
-        bool has = plugin is not null;
-        EditorButton.IsEnabled = has;
-        BypassButton.IsEnabled = has;
-        RemoveButton.IsEnabled = has;
-        UpButton.IsEnabled = has && plugin!.Index > 0;
-        DownButton.IsEnabled = has && plugin!.Index < _plugins.Count - 1;
-    }
-
-    private async void ChainList_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        UpdateChainButtons();
-        await LoadParamsAsync();
-    }
-
-    private async Task LoadParamsAsync()
-    {
-        var plugin = SelectedPlugin;
-        if (plugin is null || !_connected)
-        {
-            ParamList.ItemsSource = null;
-            ParamsTitle.Text = "插件参数";
-            ParamEmpty.Visibility = Visibility.Visible;
-            return;
-        }
-        try
-        {
-            var result = await _client.CallAsync("plugin_params",
-                new JsonObject { ["index"] = plugin.Index }, 30000);
-            _suppressParam = true;
-            var items = new List<VstParamItem>();
-            if (result.TryGetProperty("params", out var array) && array.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var p in array.EnumerateArray())
-                {
-                    string title = Str(p, "title");
-                    if (title.Length == 0) title = Str(p, "shortTitle");
-                    int flags = (int)Num(p, "flags", 0);
-                    items.Add(new VstParamItem
-                    {
-                        PluginIndex = plugin.Index,
-                        ParamIndex = (int)Num(p, "index", 0),
-                        ParamId = (uint)Num(p, "id", 0),
-                        Name = title.Length > 0 ? title : $"参数 {Num(p, "index", 0):0}",
-                        ReadOnly = (flags & 2) != 0,
-                        Value = Math.Clamp(Num(p, "value", 0), 0, 1),
-                    });
-                }
-            }
-            ParamList.ItemsSource = items;
-            ParamEmpty.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            ParamsTitle.Text = $"插件参数 · {plugin.Name}（{items.Count}）";
-            _suppressParam = false;
-            _pendingParams.Clear();
-        }
-        catch (Exception ex)
-        {
-            _suppressParam = false;
-            ShowError(ex.Message);
-        }
-    }
-
-    private void ParamSlider_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
-    {
-        if (_suppressParam || !_connected) return;
-        if (sender is not Slider slider || slider.DataContext is not VstParamItem item) return;
-        // The slider binds one-way from the model; a real move is the only way
-        // the incoming value can differ from the model value.
-        if (Math.Abs(item.Value - e.NewValue) < 1e-6) return;
-        item.Value = e.NewValue;
-        _pendingParams[(item.PluginIndex, item.ParamIndex)] = e.NewValue;
-    }
-
-    private async void FlushParams(object? sender, object args)
-    {
-        if (_flushingParams || !_connected || _pendingParams.Count == 0) return;
-        _flushingParams = true;
-        try
-        {
-            var pending = _pendingParams.ToList();
-            _pendingParams.Clear();
-            foreach (var entry in pending)
-            {
-                await _client.CallAsync("plugin_param", new JsonObject
-                {
-                    ["index"] = entry.Key.plugin,
-                    ["param"] = entry.Key.param,
-                    ["value"] = entry.Value,
-                }, 10000);
-            }
-        }
-        catch (Exception ex)
-        {
-            ShowError(ex.Message);
-        }
-        finally
-        {
-            _flushingParams = false;
-        }
-    }
-
-    private async void Editor_Click(object sender, RoutedEventArgs e)
-    {
-        var plugin = SelectedPlugin;
-        if (plugin is null || !_connected) return;
-        try
-        {
-            var result = await _client.CallAsync("plugin_open_editor",
-                new JsonObject { ["index"] = plugin.Index }, 30000);
-            long hwnd = (long)Num(result, "hwnd", 0);
-            if (hwnd <= 0)
-                ShowError("该插件没有提供可嵌入的编辑器视图", InfoBarSeverity.Warning);
-        }
-        catch (Exception ex)
-        {
-            ShowError(ex.Message);
-        }
-    }
-
-    private async void Bypass_Click(object sender, RoutedEventArgs e)
-    {
-        var plugin = SelectedPlugin;
-        if (plugin is null || !_connected) return;
-        try
-        {
-            var result = await _client.CallAsync("plugin_bypass", new JsonObject
-            {
-                ["index"] = plugin.Index,
-                ["bypass"] = !plugin.Bypass,
-            }, 10000);
-            ApplyPlugins(result.GetProperty("plugins"));
-        }
-        catch (Exception ex)
-        {
-            ShowError(ex.Message);
-        }
-    }
-
-    private async void Up_Click(object sender, RoutedEventArgs e) => await MovePluginAsync(-1);
-
-    private async void Down_Click(object sender, RoutedEventArgs e) => await MovePluginAsync(1);
-
-    private async Task MovePluginAsync(int delta)
-    {
-        var plugin = SelectedPlugin;
-        if (plugin is null || !_connected) return;
-        int target = plugin.Index + delta;
-        if (target < 0 || target >= _plugins.Count) return;
-        try
-        {
-            var result = await _client.CallAsync("plugin_move", new JsonObject
-            {
-                ["from"] = plugin.Index,
-                ["to"] = target,
-            }, 10000);
-            _suppressParam = true;
-            _plugins.Clear();
-            foreach (var item in result.GetProperty("plugins").EnumerateArray())
-            {
-                _plugins.Add(new PluginItem
-                {
-                    Index = (int)Num(item, "index", _plugins.Count),
-                    Name = Str(item, "name"),
-                    Vendor = Str(item, "vendor"),
-                    Path = Str(item, "path"),
-                    ClassId = Str(item, "classId"),
-                    Bypass = Bool(item, "bypass"),
-                    ParamCount = (int)Num(item, "paramCount", 0),
-                });
-            }
-            _suppressParam = false;
-            ChainList.SelectedItem = _plugins.FirstOrDefault(p => p.Index == target);
-            UpdateChainButtons();
-            await LoadParamsAsync();
-        }
-        catch (Exception ex)
-        {
-            ShowError(ex.Message);
-        }
-    }
-
-    private async void Remove_Click(object sender, RoutedEventArgs e)
-    {
-        var plugin = SelectedPlugin;
-        if (plugin is null || !_connected) return;
-        try
-        {
-            var result = await _client.CallAsync("plugin_remove",
-                new JsonObject { ["index"] = plugin.Index }, 10000);
-            ApplyPlugins(result.GetProperty("plugins"));
-        }
-        catch (Exception ex)
-        {
-            ShowError(ex.Message);
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // plugin scan dialog
-    // ------------------------------------------------------------------
-    private async void Scan_Click(object sender, RoutedEventArgs e)
-    {
-        if (!_connected) return;
-        var directoryBox = new TextBox
-        {
-            PlaceholderText = "可选：额外 VST3 目录，多个用分号分隔；留空扫描系统标准目录",
-            Margin = new Thickness(0, 0, 0, 8),
-        };
-        var scanButton = new Button { Content = "扫描" };
-        var ring = new ProgressRing { Width = 20, Height = 20, IsActive = false };
-        var statusText = new TextBlock { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
-        var list = new ListView { Height = 300, SelectionMode = ListViewSelectionMode.Single };
-        var dialog = new ContentDialog
-        {
-            XamlRoot = Content.XamlRoot,
-            Title = "添加 VST3 插件",
-            PrimaryButtonText = "添加到链",
-            CloseButtonText = "取消",
-            DefaultButton = ContentDialogButton.Primary,
-            IsPrimaryButtonEnabled = false,
-            Content = new StackPanel
-            {
-                Spacing = 6,
-                Children =
-                {
-                    directoryBox,
-                    new StackPanel
-                    {
-                        Orientation = Orientation.Horizontal,
-                        Spacing = 8,
-                        Children = { scanButton, ring, statusText },
-                    },
-                    list,
-                },
-            },
-        };
-
-        async Task RunScan()
-        {
-            scanButton.IsEnabled = false;
-            ring.IsActive = true;
-            statusText.Text = "正在扫描；插件模块在独立子进程中加载，可能需要数十秒…";
-            try
-            {
-                JsonObject? args = null;
-                var dirs = directoryBox.Text.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries)
-                    .Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
-                if (dirs.Count > 0)
-                    args = new JsonObject
-                    {
-                        ["dirs"] = new JsonArray(dirs.Select(d => JsonValue.Create(d)).ToArray()),
-                    };
-                var result = await _client.CallAsync("scan", args, 180000);
-                var items = new List<PluginScanItem>();
-                if (result.TryGetProperty("plugins", out var array) && array.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var p in array.EnumerateArray())
-                    {
-                        items.Add(new PluginScanItem
-                        {
-                            Name = Str(p, "name"),
-                            Vendor = Str(p, "vendor"),
-                            Path = Str(p, "path"),
-                            ClassId = Str(p, "classId"),
-                        });
-                    }
-                }
-                items.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
-                list.ItemsSource = items;
-                long errors = 0;
-                if (result.TryGetProperty("errors", out var e) && e.ValueKind == JsonValueKind.Array)
-                    errors = e.GetArrayLength();
-                statusText.Text = $"发现 {items.Count} 个效果器；{errors} 个模块报告错误。";
-            }
-            catch (Exception ex)
-            {
-                statusText.Text = ex.Message;
-            }
-            finally
-            {
-                ring.IsActive = false;
-                scanButton.IsEnabled = true;
-            }
-        }
-
-        scanButton.Click += async (_, _) => await RunScan();
-        list.SelectionChanged += (_, _) => dialog.IsPrimaryButtonEnabled = list.SelectedItem is PluginScanItem;
-
-        dialog.PrimaryButtonClick += async (_, buttonArgs) =>
-        {
-            var deferral = buttonArgs.GetDeferral();
-            try
-            {
-                if (list.SelectedItem is not PluginScanItem selected) return;
-                var result = await _client.CallAsync("plugin_add", new JsonObject
-                {
-                    ["path"] = selected.Path,
-                    ["classId"] = selected.ClassId,
-                }, 60000);
-                ApplyPlugins(result.GetProperty("plugins"));
-                ChainList.SelectedItem = _plugins.LastOrDefault();
-                await LoadParamsAsync();
-            }
-            catch (Exception ex)
-            {
-                buttonArgs.Cancel = true;
-                statusText.Text = ex.Message;
-            }
-            finally
-            {
-                deferral.Complete();
-            }
-        };
-
-        await dialog.ShowAsync();
-    }
-
-    // ------------------------------------------------------------------
     // presets
     // ------------------------------------------------------------------
     private async Task RefreshPresets(string? select = null)
@@ -4898,7 +4881,6 @@ def process(x, sr, params):
         try
         {
             var result = await _client.CallAsync("preset_load", new JsonObject { ["name"] = name }, 60000);
-            ApplyPlugins(result.GetProperty("plugins"));
             if (result.TryGetProperty("settings", out var settings))
                 ApplySettings(settings);
             await RefreshPresets(name);
@@ -5002,7 +4984,6 @@ def process(x, sr, params):
     private void OnClosed(object sender, WindowEventArgs args)
     {
         _statusTimer.Stop();
-        _paramTimer.Stop();
         _optionTimer.Stop();
         _client.Dispose();
     }

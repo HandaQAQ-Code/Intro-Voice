@@ -6,8 +6,7 @@
     xmlns:controls="using:MixerUI.Controls"
     xmlns:settings="using:CommunityToolkit.WinUI.Controls">
 
-    <Grid x:Name="RootLayout" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}"
-          Loaded="RootLayout_Loaded">
+    <Grid x:Name="RootLayout" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -65,13 +64,7 @@
                         <FontIcon Glyph="&#xE720;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
-                <NavigationViewItem Tag="plugins">
-                    <NavigationViewItem.Content>
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBlock Text="VST3 插件" />
-                            <InfoBadge x:Name="PluginBadge" Value="0" Visibility="Collapsed" />
-                        </StackPanel>
-                    </NavigationViewItem.Content>
+                <NavigationViewItem Content="插件" Tag="plugins">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE71D;" />
                     </NavigationViewItem.Icon>
@@ -94,44 +87,68 @@
             </NavigationView.MenuItems>
 
             <NavigationView.PaneFooter>
-                <!-- 收起时整块隐藏：52px 窄条放不下状态和按钮，硬挤会竖排并溢出到主内容区 -->
+                <Grid>
+                <!-- 展开：完整状态与按钮 -->
                 <StackPanel x:Name="PaneFooterBox" Spacing="8" Margin="4,0,4,8">
-                    <!-- 状态与操作：从顶栏移到侧边栏底部，顶栏只留 Logo 和软件名 -->
-                    <StackPanel Spacing="3">
-                        <Grid ColumnSpacing="6">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <Ellipse x:Name="StatusDot" Width="7" Height="7" Fill="Gray"
-                                     VerticalAlignment="Center" />
-                            <TextBlock x:Name="ServiceText" Grid.Column="1"
-                                       Text="正在连接调音台服务…" FontSize="11"
-                                       TextTrimming="CharacterEllipsis"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <ProgressRing x:Name="BusyRing" Grid.Column="2" Width="12" Height="12"
-                                          IsActive="False" />
-                        </Grid>
-                        <TextBlock x:Name="EnginePillText" Text="引擎已停止" FontSize="11"
-                                   TextTrimming="CharacterEllipsis"
-                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                    </StackPanel>
+                    <!-- 状态卡：第一行是服务连接，第二行是引擎运行状态（带彩色状态点） -->
+                    <Border Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1" CornerRadius="8" Padding="10,8">
+                        <StackPanel Spacing="5">
+                            <Grid ColumnSpacing="7">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Ellipse x:Name="StatusDot" Width="7" Height="7" Fill="Gray"
+                                         VerticalAlignment="Center" />
+                                <TextBlock x:Name="ServiceText" Grid.Column="1"
+                                           Text="正在连接调音台服务…" FontSize="12"
+                                           VerticalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <ProgressRing x:Name="BusyRing" Grid.Column="2" Width="13" Height="13"
+                                              IsActive="False" />
+                            </Grid>
+                            <StackPanel Orientation="Horizontal" Spacing="7" Margin="0,0,0,1">
+                                <Ellipse x:Name="EngineDot" Width="6" Height="6" Fill="Gray"
+                                         VerticalAlignment="Center" />
+                                <TextBlock x:Name="EnginePillText" Text="引擎已停止" FontSize="12"
+                                           VerticalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
 
-                    <Grid ColumnSpacing="6">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <Button x:Name="StartButton" Content="启动" Grid.Column="0"
-                                Style="{StaticResource AccentButtonStyle}" Click="Start_Click"
-                                IsEnabled="False" HorizontalAlignment="Stretch" Padding="0,6" />
-                        <Button x:Name="StopButton" Content="停止" Grid.Column="1"
-                                Click="Stop_Click" IsEnabled="False"
-                                HorizontalAlignment="Stretch" Padding="0,6" />
-                    </Grid>
+                    <!-- 启动 / 停止合并为一个按钮：未运行时是「启动」，运行后同一位置变成「停止」 -->
+                    <Button x:Name="TransportButton" Click="Transport_Click"
+                            Style="{StaticResource AccentButtonStyle}"
+                            IsEnabled="False" HorizontalAlignment="Stretch" Padding="0,7"
+                            MinHeight="38" CornerRadius="8"
+                            ToolTipService.ToolTip="启动音频链路（麦克风 → CABLE Input）">
+                        <StackPanel Orientation="Horizontal" Spacing="6"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <FontIcon x:Name="TransportIcon" Glyph="&#xE768;" FontSize="12"
+                                      VerticalAlignment="Center" />
+                            <TextBlock x:Name="TransportLabel" Text="启动" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
                     <Button x:Name="MuteButton" Content="静音" Click="Mute_Click" IsEnabled="False"
                             HorizontalAlignment="Stretch" Padding="0,6" />
+
+                    <Button x:Name="ThemeToggleButton" Click="ThemeToggle_Click"
+                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                            Padding="12,9" MinHeight="40" CornerRadius="8"
+                            ToolTipService.ToolTip="切换深色 / 浅色模式">
+                        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                            <FontIcon x:Name="ThemeToggleIcon" Glyph="&#xE708;" FontSize="14"
+                                      VerticalAlignment="Center" />
+                            <TextBlock x:Name="ThemeToggleLabel" Text="深色模式" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
 
                     <Button Click="Tutorial_Click"
                             HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
@@ -144,6 +161,49 @@
                     <TextBlock Text="Intro Voice 1.0.0" FontSize="11" Margin="2,0,0,0"
                                Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                 </StackPanel>
+
+                <!-- 收起：和导航项一样只显示图标，不再整块消失 -->
+                <StackPanel x:Name="PaneFooterCompact" Spacing="4" Margin="0,0,0,8"
+                            HorizontalAlignment="Stretch" Visibility="Collapsed">
+                    <Border Width="24" Height="1" Margin="0,0,0,4"
+                            HorizontalAlignment="Center"
+                            Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                    <Ellipse x:Name="StatusDotCompact" Width="8" Height="8" Margin="0,0,0,2"
+                             Fill="{x:Bind StatusDot.Fill, Mode=OneWay}"
+                             HorizontalAlignment="Center"
+                             ToolTipService.ToolTip="服务状态" />
+                    <Button x:Name="TransportCompact" Click="Transport_Click"
+                            Style="{StaticResource AccentButtonStyle}"
+                            IsEnabled="{x:Bind TransportButton.IsEnabled, Mode=OneWay}"
+                            Width="40" Height="36" Padding="0" CornerRadius="8"
+                            HorizontalAlignment="Center"
+                            ToolTipService.ToolTip="启动音频链路">
+                        <FontIcon x:Name="TransportCompactIcon" Glyph="&#xE768;" FontSize="15" />
+                    </Button>
+                    <Button x:Name="MuteCompact" Click="Mute_Click"
+                            IsEnabled="{x:Bind MuteButton.IsEnabled, Mode=OneWay}"
+                            Width="40" Height="36" Padding="0"
+                            HorizontalAlignment="Center"
+                            Background="Transparent" BorderThickness="0"
+                            ToolTipService.ToolTip="静音">
+                        <FontIcon x:Name="MuteCompactIcon" Glyph="&#xE767;" FontSize="15" />
+                    </Button>
+                    <Button x:Name="ThemeToggleCompact" Click="ThemeToggle_Click"
+                            Width="40" Height="36" Padding="0"
+                            HorizontalAlignment="Center"
+                            Background="Transparent" BorderThickness="0"
+                            ToolTipService.ToolTip="切换深色 / 浅色模式">
+                        <FontIcon x:Name="ThemeToggleCompactIcon" Glyph="&#xE708;" FontSize="15" />
+                    </Button>
+                    <Button Click="Tutorial_Click"
+                            Width="40" Height="36" Padding="0"
+                            HorizontalAlignment="Center"
+                            Background="Transparent" BorderThickness="0"
+                            ToolTipService.ToolTip="新手教程">
+                        <FontIcon Glyph="&#xE897;" FontSize="15" />
+                    </Button>
+                </StackPanel>
+                </Grid>
             </NavigationView.PaneFooter>
 
             <Grid x:Name="PagesRoot">
@@ -177,7 +237,7 @@
                                     <TextBlock Text="让每一次开口，都像在录音棚"
                                                FontSize="30" FontWeight="Bold" Foreground="White"
                                                TextWrapping="Wrap" />
-                                    <TextBlock Text="AI 声纹提取 · 实时降噪 · 超分重建 · 内置效果与 VST3 · 一键送进 OBS"
+                                    <TextBlock Text="AI 声纹提取 · 实时降噪 · 超分重建 · 内置效果与插件 · 一键送进 OBS"
                                                Style="{StaticResource HeroCaption}" />
                                     <StackPanel Orientation="Horizontal" Spacing="6" Margin="0,8,0,0">
                                         <Border CornerRadius="11" Padding="10,3" Background="#26FFFFFF"
@@ -197,7 +257,7 @@
                                         <TextBlock Text="→" Foreground="#99FFFFFF" VerticalAlignment="Center" />
                                         <Border CornerRadius="11" Padding="10,3" Background="#26FFFFFF"
                                                 BorderBrush="#33FFFFFF" BorderThickness="1">
-                                            <TextBlock Text="VST3" FontSize="11" Foreground="White" />
+                                            <TextBlock Text="插件" FontSize="11" Foreground="White" />
                                         </Border>
                                         <TextBlock Text="→" Foreground="#99FFFFFF" VerticalAlignment="Center" />
                                         <Border CornerRadius="11" Padding="10,3" Background="#F2C08A2E">
@@ -231,7 +291,8 @@
                             <Border Style="{StaticResource CardStyle}">
                                 <StackPanel Spacing="10">
                                     <TextBlock Text="输入 / 输出" Style="{StaticResource SectionTitle}" />
-                                    <ComboBox x:Name="InputCombo" Header="物理麦克风" HorizontalAlignment="Stretch" />
+                                    <ComboBox x:Name="InputCombo" Header="物理麦克风" HorizontalAlignment="Stretch"
+                                              SelectionChanged="InputCombo_SelectionChanged" />
                                     <ComboBox x:Name="OutputCombo" Header="输出（CABLE Input）" HorizontalAlignment="Stretch" />
                                     <Button Content="刷新设备列表" HorizontalAlignment="Stretch" Click="RefreshDevices_Click" />
                                     <TextBlock x:Name="RoutingText" Style="{StaticResource HintText}"
@@ -497,7 +558,7 @@
                                     <TextBlock Text="内置效果器" Style="{StaticResource SectionTitle}" />
                                     <TextBlock x:Name="DspStatusText" Style="{StaticResource HintText}"
                                                Text="全部在音频线程内实时运算，零额外延迟，参数随预设保存。" />
-                                    <TextBlock Text="高通 → 低通 → 噪声门 → 压缩 → 三段 EQ → VST3 链 → 限幅"
+                                    <TextBlock Text="高通 → 低通 → 噪声门 → 压缩 → 三段 EQ → 插件链 → 限幅"
                                                Style="{StaticResource HintText}" Margin="0,2,0,0" />
                                 </StackPanel>
                                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
@@ -1044,106 +1105,51 @@
                 </Grid>
             </Grid>
 
-            <!-- VST3 插件 -->
-<Grid x:Name="PagePlugins" Visibility="Collapsed">
-                <Grid Padding="18,14,18,18" ColumnSpacing="14">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="440" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
+            <!-- 插件：创意工坊插件的开关与实时参数（运行中也可调） -->
+            <Grid x:Name="PagePlugins" Visibility="Collapsed" Padding="18,14,18,18" RowSpacing="12">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
 
-                    <Border x:Name="PluginChainCard" Style="{StaticResource CardStyle}">
-                        <Grid RowSpacing="10">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel Spacing="2" VerticalAlignment="Center">
-                                    <TextBlock Text="插件链" Style="{StaticResource SectionTitle}" />
-                                    <TextBlock x:Name="ChainCountText" Text="0 个插件" Style="{StaticResource HintText}" />
-                                </StackPanel>
-                                <Button Grid.Column="1" x:Name="AddPluginButton" Content="扫描 / 添加"
-                                        Click="Scan_Click" Style="{StaticResource AccentButtonStyle}" />
-                            </Grid>
-
-                            <Grid Grid.Row="1">
-                                <ListView x:Name="ChainList" SelectionMode="Single"
-                                          SelectionChanged="ChainList_SelectionChanged">
-                                    <ListView.ItemTemplate>
-                                        <DataTemplate x:DataType="local:PluginItem">
-                                            <StackPanel Padding="0,5">
-                                                <TextBlock Text="{x:Bind Header}" FontWeight="SemiBold"
-                                                           TextTrimming="CharacterEllipsis" />
-                                                <TextBlock Text="{x:Bind Subtitle}" FontSize="12"
-                                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                           TextTrimming="CharacterEllipsis" />
-                                            </StackPanel>
-                                        </DataTemplate>
-                                    </ListView.ItemTemplate>
-                                </ListView>
-                                <StackPanel x:Name="ChainEmpty" VerticalAlignment="Center" Spacing="6"
-                                            HorizontalAlignment="Center" MaxWidth="300">
-                                    <Image Source="ms-appx:///Assets/empty-plugins.png"
-                                           Style="{StaticResource EmptyStateImage}" />
-                                    <TextBlock Text="还没有加载插件" HorizontalAlignment="Center" FontWeight="SemiBold" />
-                                    <TextBlock Text="点击右上角「扫描 / 添加」，从系统 VST3 目录选择效果器加到链上。"
-                                               Style="{StaticResource HintText}" TextAlignment="Center" />
-                                </StackPanel>
-                            </Grid>
-
-                            <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="6">
-                                <Button x:Name="EditorButton" Content="打开面板" Click="Editor_Click" IsEnabled="False" />
-                                <Button x:Name="BypassButton" Content="旁通" Click="Bypass_Click" IsEnabled="False" />
-                                <Button x:Name="UpButton" Content="上移" Click="Up_Click" IsEnabled="False" />
-                                <Button x:Name="DownButton" Content="下移" Click="Down_Click" IsEnabled="False" />
-                                <Button x:Name="RemoveButton" Content="移除" Click="Remove_Click" IsEnabled="False" />
+                <Border Style="{StaticResource CardStyle}" Padding="14,10">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="3">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <FontIcon Glyph="&#xE71D;" FontSize="15"
+                                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                <TextBlock Text="插件" Style="{StaticResource SectionTitle}" />
+                                <Border Style="{StaticResource PillBorder}" Padding="8,1" VerticalAlignment="Center">
+                                    <TextBlock Text="实时生效" FontSize="11" />
+                                </Border>
                             </StackPanel>
-                            <TextBlock Grid.Row="3" Style="{StaticResource HintText}"
-                                       Text="音频由服务进程内的原生 VST3 宿主原地处理；插件面板是真实原生窗口。" />
-                        </Grid>
-                    </Border>
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Text="开关与参数在链路运行中也会立刻生效；插件按从上到下的顺序处理，可在创意工坊或插件市场继续安装。" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                            <Button Content="刷新列表" Click="FxRefresh_Click" />
+                            <Button Content="打开插件市场" Click="FxOpenMarket_Click" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
 
-                    <Border x:Name="PluginParamsCard" Grid.Column="1" Style="{StaticResource CardStyle}">
-                        <Grid RowSpacing="8">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                            </Grid.RowDefinitions>
-                            <TextBlock x:Name="ParamsTitle" Text="插件参数" Style="{StaticResource SectionTitle}" />
-                            <Grid Grid.Row="1">
-                                <ListView x:Name="ParamList" SelectionMode="None">
-                                    <ListView.ItemTemplate>
-                                        <DataTemplate x:DataType="local:VstParamItem">
-                                            <Grid Padding="0,3" ColumnSpacing="12">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="180" />
-                                                </Grid.ColumnDefinitions>
-                                                <TextBlock Text="{x:Bind Name}" VerticalAlignment="Center"
-                                                           TextTrimming="CharacterEllipsis" />
-                                                <Slider Grid.Column="1" Minimum="0" Maximum="1" StepFrequency="0.001"
-                                                        Value="{x:Bind Value, Mode=OneWay}"
-                                                        ValueChanged="ParamSlider_ValueChanged" />
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ListView.ItemTemplate>
-                                </ListView>
-                                <StackPanel x:Name="ParamEmpty" VerticalAlignment="Center" Spacing="6"
-                                            HorizontalAlignment="Center" MaxWidth="320">
-                                    <TextBlock Text="选中左侧插件后，这里会列出它的全部参数" Style="{StaticResource HintText}"
-                                               TextAlignment="Center" />
-                                </StackPanel>
-                            </Grid>
-                        </Grid>
-                    </Border>
-                </Grid>
+                <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="14,10">
+                    <Grid>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel x:Name="FxListPanel" Spacing="8" />
+                        </ScrollViewer>
+                        <StackPanel x:Name="FxEmptyPanel" VerticalAlignment="Center" Spacing="6"
+                                    HorizontalAlignment="Center" MaxWidth="360" Visibility="Collapsed">
+                            <TextBlock Text="还没有可用的插件" HorizontalAlignment="Center" FontWeight="SemiBold" />
+                            <TextBlock Text="去「插件市场」安装，或在「创意工坊」新建一个；安装后回到这里就能开关和实时调参。"
+                                       Style="{StaticResource HintText}" TextAlignment="Center" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
             </Grid>
 
             <!-- 手机麦克风 -->
@@ -1494,7 +1500,7 @@
                                                 <TextBlock Text="效果链" FontSize="12" />
                                             </Border>
                                             <TextBlock Grid.Row="1" Grid.Column="1" Style="{StaticResource HintText}"
-                                                       Text="AI 降噪 / 超分 → 内置效果 → VST3 → 创意工坊" VerticalAlignment="Center" />
+                                                       Text="AI 降噪 / 超分 → 内置效果 → 创意工坊插件" VerticalAlignment="Center" />
                                             <Border Grid.Row="2" Style="{StaticResource PillBorder}" Padding="10,3">
                                                 <TextBlock Text="CABLE Input" FontSize="12" />
                                             </Border>
@@ -1606,7 +1612,7 @@
                         <StackPanel Spacing="4">
                             <TextBlock Text="插件市场" Style="{StaticResource SectionTitle}" />
                             <TextBlock x:Name="MarketStatusText" Style="{StaticResource HintText}"
-                                       Text="从远程目录拉取可用的 VST3 效果器；一键安装到当前用户目录，不需要管理员权限。" />
+                                       Text="从远程目录拉取可用的音频插件；一键安装到当前用户目录，不需要管理员权限。" />
                             <TextBlock x:Name="MarketSourceText" Style="{StaticResource HintText}" />
                             <ProgressBar x:Name="MarketProgress" Height="4" Maximum="100" Visibility="Collapsed"
                                          Margin="0,6,0,0" />
@@ -1664,7 +1670,7 @@
                             <StackPanel Spacing="6">
                                 <TextBlock Text="关于" Style="{StaticResource SectionTitle}" />
                                 <TextBlock Text="Intro Voice 音拓 1.0.0" Style="{StaticResource HintText}" />
-                                <TextBlock Text="WinUI 3 界面 + Python 音频引擎 + 原生 VST3 宿主；内置效果器为 numpy/scipy 实时实现。"
+                                <TextBlock Text="WinUI 3 界面 + Python 音频引擎 + 工坊插件运行时；内置效果器为 numpy/scipy 实时实现。"
                                            Style="{StaticResource HintText}" />
                             </StackPanel>
                         </Border>
