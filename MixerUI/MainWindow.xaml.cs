@@ -45,8 +45,10 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherQueueTimer _micTimer;
     private readonly DispatcherQueueTimer _micSettingTimer;
 
+    private const string MobileInputLabel = "手机麦克风（Wi-Fi）";
     private string _savedInputLabel = "";
     private string _savedOutputLabel = "";
+    private string _lastDeviceInputLabel = "";
     private bool _suppressOptions;
     private bool _dspSyncing;
     private bool _dspDirty;
@@ -451,6 +453,8 @@ public sealed partial class MainWindow : Window
     {
         _inputs = ParseDevices(devices.GetProperty("inputs"));
         _outputs = ParseDevices(devices.GetProperty("outputs"));
+        // 输入下拉固定留一项「手机麦克风」：选中它等同于把输入源切到手机。
+        _inputs.Insert(0, new DeviceItem { Id = -2, Label = MobileInputLabel });
         // 重建列表会触发 SelectionChanged：这里的选择是程序补的，不能当成用户操作写回设置。
         _applyingDevices = true;
         try
@@ -460,7 +464,8 @@ public sealed partial class MainWindow : Window
 
             string cableLabel = Str(devices, "cableOutput");
             string defaultInput = Str(devices, "inputDefault");
-            SelectDevice(InputCombo, _inputs, _savedInputLabel, defaultInput);
+            string savedInput = _micSource == "mobile" ? MobileInputLabel : _savedInputLabel;
+            SelectDevice(InputCombo, _inputs, savedInput, defaultInput);
             SelectDevice(OutputCombo, _outputs, _savedOutputLabel, cableLabel);
         }
         finally
@@ -479,18 +484,79 @@ public sealed partial class MainWindow : Window
         UpdateRoutingText();
         if (_applyingDevices || !_connected) return;
         if (InputCombo.SelectedItem is not DeviceItem item) return;
+        if (item.Id == -2)
+        {
+            // 手机麦克风：切输入源并自动启动推送服务，扫码后即可用。
+            if (_micSource == "mobile") return;
+            _savedInputLabel = item.Label;
+            try
+            {
+                await _client.CallAsync("set_options",
+                    new JsonObject { ["inputSource"] = "mobile" }, 20000);
+                _micSourcePushedAt = DateTime.UtcNow;
+                SetMicSource("mobile", false);
+                UpdateMicDeviceName();
+                ShowError("已切换到手机麦克风：请到「麦克风配置 → 手机麦克风」扫码连接，然后启动",
+                    InfoBarSeverity.Success);
+            }
+            catch (Exception ex)
+            {
+                ShowError("切换手机麦克风失败：" + ex.Message);
+            }
+            return;
+        }
         if (item.Label == _savedInputLabel) return;
+        _lastDeviceInputLabel = item.Label;
         _savedInputLabel = item.Label;
         try
         {
             await _client.CallAsync("settings_set",
                 new JsonObject { ["inputDevice"] = item.Id }, 10000);
+            _micSourcePushedAt = DateTime.UtcNow;
+            SetMicSource("device", false);
             ShowError($"已选择输入麦克风：{item.Label}", InfoBarSeverity.Success);
         }
         catch (Exception ex)
         {
             ShowError("保存麦克风选择失败：" + ex.Message);
         }
+    }
+
+    /// <summary>状态里的输入源变了（比如在麦克风页切换），主界面下拉要跟着走。</summary>
+    private void SyncInputSourceFromStatus(string source)
+    {
+        if (source.Length == 0 || source == _micSource) return;
+        if ((DateTime.UtcNow - _micSourcePushedAt).TotalSeconds < 2.5) return;
+        SetMicSource(source, false);
+        SyncInputComboForSource(source);
+    }
+
+    private void SyncInputComboForSource(string source)
+    {
+        bool previous = _applyingDevices;
+        _applyingDevices = true;
+        try
+        {
+            DeviceItem? picked;
+            if (source == "mobile")
+            {
+                picked = _inputs.FirstOrDefault(d => d.Id == -2);
+                if (picked is not null) _savedInputLabel = picked.Label;
+            }
+            else
+            {
+                picked = _inputs.FirstOrDefault(d => d.Id != -2 && d.Label == _lastDeviceInputLabel)
+                         ?? _inputs.FirstOrDefault(d => d.Id != -2);
+                if (picked is not null) _savedInputLabel = picked.Label;
+            }
+            if (picked is not null) InputCombo.SelectedItem = picked;
+        }
+        finally
+        {
+            _applyingDevices = previous;
+        }
+        UpdateRoutingText();
+        UpdateMicDeviceName();
     }
 
     private static void SelectDevice(ComboBox combo, List<DeviceItem> items, string saved, string fallback)
@@ -958,6 +1024,7 @@ public sealed partial class MainWindow : Window
         _muted = Bool(status, "muted");
         MuteButton.Content = _muted ? "取消静音" : "静音";
         SyncMuteCompact();
+        SyncInputSourceFromStatus(Str(status, "inputSource"));
 
         ApplySystemMetrics(status);
         UpdateFloatingData(status);
@@ -4245,11 +4312,22 @@ def process(x, sr, params):
         try
         {
             await _client.CallAsync("set_options",
-                new JsonObject { ["inputSource"] = source }, 8000);
+                new JsonObject { ["inputSource"] = source }, 20000);
             _micSourcePushedAt = DateTime.UtcNow;
             MicDeviceText.Text = source == "mobile"
                 ? "输入源已切到手机麦克风；回「主控」页重新开始即可生效。"
                 : "输入源已切回电脑声卡；回「主控」页重新开始即可生效。";
+            if (source == "mobile")
+            {
+                // 直接把视图切到手机麦克风，二维码就在眼前。
+                SetMicView("mobile");
+                ShowError("已切到手机麦克风：扫码连接手机后回主控页启动", InfoBarSeverity.Success);
+            }
+            else
+            {
+                ShowError("已切回电脑声卡：回主控页重新开始即可生效", InfoBarSeverity.Success);
+            }
+            SyncInputComboForSource(source);
             UpdateMicSourceHints();
         }
         catch (Exception ex)

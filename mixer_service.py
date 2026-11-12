@@ -1959,8 +1959,16 @@ class Service:
                     f"GPU 档不可用（{gpu_note}）。可切换到 CPU 档，或运行 "
                     "tools\\install_gpu_support.bat 安装 CUDA 版 PyTorch 后重试。")
         if source == "mobile":
+            # 用户选了手机麦克风，服务没开就顺手拉起来，避免「选了却启动不了」。
             if self.mic_server.httpd is None:
-                raise RuntimeError("手机麦克风服务未启动。请到「手机麦克风」页启动服务，或用物理麦克风。")
+                try:
+                    status = self.mic_server.start()
+                except Exception as exc:
+                    raise RuntimeError(f"手机麦克风服务启动失败：{exc}")
+                if not status.get("running"):
+                    raise RuntimeError(
+                        "手机麦克风服务没有启动成功：请到「麦克风配置 → 手机麦克风」页"
+                        "点「启动服务」，或检查端口是否被其他程序占用。")
             cfg["inputDevice"] = -1
         elif cfg["inputDevice"] < 0:
             raise RuntimeError("尚未选择输入设备：请在「主控」页选麦克风，或点「新手教程 → 一键自动配置」。")
@@ -2040,6 +2048,12 @@ class Service:
             if source not in ("device", "mobile"):
                 raise RuntimeError("输入源无效")
             self.settings["inputSource"] = source
+            if source == "mobile":
+                # 选中手机麦克风就把推送服务拉起来，扫码即可用，不必再去另一页手动启动。
+                try:
+                    self.mic_server.start()
+                except Exception as exc:
+                    LOG.warning("切换手机麦克风时启动服务失败：%s", exc)
             self._save_settings()
         return {"ok": True}
 
